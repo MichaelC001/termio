@@ -844,6 +844,33 @@ public final class TermiodStreamTerminal: @unchecked Sendable {
         }
     }
 
+    /// Where the view sits in the screen and its history, in rows. libghostty
+    /// sends no change notification, so a scrollbar polls this each frame.
+    public struct Scrollbar: Equatable, Sendable {
+        public var total: UInt64
+        public var offset: UInt64
+        public var length: UInt64
+    }
+
+    public var scrollbar: Scrollbar? {
+        locked {
+            var state = GhosttyTerminalScrollbar()
+            guard (try? get(GHOSTTY_TERMINAL_DATA_SCROLLBAR, &state)) != nil else { return nil }
+            return Scrollbar(total: state.total, offset: state.offset, length: state.len)
+        }
+    }
+
+    /// Moves this view so `row`, in `Scrollbar.offset`'s row space, is at its top.
+    public func scrollViewport(toRow row: UInt64) {
+        locked {
+            var behavior = GhosttyTerminalScrollViewport()
+            behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW
+            behavior.value.row = Int(clamping: row)
+            ghostty_terminal_scroll_viewport(terminal, behavior)
+            changesLocked &+= 1
+        }
+    }
+
     /// The active screen as plain text, one line per row, whatever part of
     /// scrollback the view shows: what `termio session read` reports.
     public func activeText() throws -> String {

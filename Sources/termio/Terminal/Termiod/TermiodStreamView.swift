@@ -19,6 +19,10 @@ final class TermiodStreamView: NSView {
     /// as the viewport declaration the daemon's size policy reads.
     var onViewport: (TerminalGrid) -> Void = { _ in }
     var onFocusChange: (Bool) -> Void = { _ in }
+    /// The color along the grid's top edge, each time it changes, for the
+    /// pane's header (`TermiodStreamFrameBuilder.topEdgeColor`).
+    var onTopEdgeColor: (NSColor) -> Void = { _ in }
+    private var reportedTopEdge: (r: UInt8, g: UInt8, b: UInt8)?
     /// Writes bytes to the session as typed — the link's `send`, which claims
     /// the write token as typing in the embedded surface does. Only Ghostty's
     /// editing bindings use it; they send fixed bytes in any mode.
@@ -32,6 +36,7 @@ final class TermiodStreamView: NSView {
 
     fileprivate let metalLayer = CAMetalLayer()
     fileprivate var renderer: TermiodStreamRenderer?
+    private let scroller = TermiodStreamScroller()
     private var displayLinkHandle: CADisplayLink?
     /// Frames presented to the layer, for the debug snapshot: a window
     /// capture cannot read a Metal layer, so this is how a run says it drew.
@@ -95,6 +100,12 @@ final class TermiodStreamView: NSView {
         metalLayer.isOpaque = appearance.backgroundOpacity >= 1
         metalLayer.maximumDrawableCount = 3
         layer = metalLayer
+        scroller.onScrollToRow = { [weak self] row in
+            guard let self else { return }
+            self.terminal()?.scrollViewport(toRow: row)
+            self.needsFullDraw = true
+        }
+        addSubview(scroller)
         do {
             let renderer = try TermiodStreamRenderer(appearance: appearance, scale: currentScale)
             metalLayer.device = renderer.device
@@ -213,6 +224,7 @@ final class TermiodStreamView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        scroller.frame = bounds
         resizeDrawable()
         declareViewport()
     }
@@ -245,6 +257,9 @@ final class TermiodStreamView: NSView {
         let identity = ObjectIdentifier(terminal)
         let replaced = identity != drawnTerminal
         drawnTerminal = identity
+        if let state = terminal.scrollbar {
+            scroller.apply(state, cellHeight: renderer.cellSize.height, replaced: replaced)
+        }
         do {
             if try renderer.draw(
                 terminal, into: metalLayer, focused: focused, force: needsFullDraw || replaced,
@@ -254,6 +269,13 @@ final class TermiodStreamView: NSView {
                 framesPresented += 1
             }
             needsFullDraw = false
+            let edge = renderer.topEdgeColor
+            if reportedTopEdge.map({ $0 != (edge.r, edge.g, edge.b) }) ?? true {
+                reportedTopEdge = (edge.r, edge.g, edge.b)
+                onTopEdgeColor(NSColor(
+                    srgbRed: CGFloat(edge.r) / 255, green: CGFloat(edge.g) / 255, blue: CGFloat(edge.b) / 255, alpha: 1
+                ))
+            }
         } catch {
             Log.termiod.error("stream frame failed: \(String(describing: error), privacy: .public)")
         }
@@ -832,6 +854,122 @@ extension TermiodStreamView: @preconcurrency NSTextInputClient {
     }
 }
 
+/// Rex's `SurfaceScroller`, which is Ghostty's macOS scroll view: a native
+/// overlay scroller over an empty document as tall as the screen and its
+/// history. The terminal still draws and scrolls itself. The knob follows the
+/// VT's scrollbar state, and dragging it moves the VT's view to a row.
+@MainActor
+final class TermiodStreamScroller: NSScrollView {
+    var onScrollToRow: (UInt64) -> Void = { _ in }
+    private let document = NSView()
+    private var state: TermiodStreamTerminal.Scrollbar?
+    private var cellHeight: CGFloat = 0
+    private var lastSentRow: UInt64?
+    /// The clip view is being moved to match the VT, so the bounds change
+    /// it posts is not the user's.
+    private var applying = false
+    /// The user is dragging the knob, so the VT follows the clip view and
+    /// not the other way round.
+    private var liveScrolling = false
+
+    init() {
+        super.init(frame: .zero)
+        drawsBackground = false
+        contentView.drawsBackground = false
+        hasVerticalScroller = false
+        hasHorizontalScroller = false
+        autohidesScrollers = true
+        // Overlay always: a legacy scroller would take columns from a grid
+        // the daemon sizes.
+        scrollerStyle = .overlay
+        verticalScrollElasticity = .none
+        horizontalScrollElasticity = .none
+        documentView = document
+        contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(clipBoundsChanged), name: NSView.boundsDidChangeNotification, object: contentView
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(liveScrollStarted), name: NSScrollView.willStartLiveScrollNotification, object: self
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(liveScrollEnded), name: NSScrollView.didEndLiveScrollNotification, object: self
+        )
+    }
+
+    @objc private func liveScrollStarted() {
+        liveScrolling = true
+    }
+
+    @objc private func liveScrollEnded() {
+        liveScrolling = false
+        if let state { layoutDocument(state) }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    /// Only the scroller takes the mouse. Clicks, drags and wheel turns over
+    /// the text belong to the terminal view under it.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit is NSScroller ? hit : nil
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if let state { layoutDocument(state) }
+    }
+
+    /// Called every frame. Ghostty's renderer polls the same state, since
+    /// libghostty reports no change.
+    func apply(_ state: TermiodStreamTerminal.Scrollbar, cellHeight: CGFloat, replaced: Bool) {
+        guard state != self.state || cellHeight != self.cellHeight || replaced else { return }
+        let previous = self.state
+        self.state = state
+        self.cellHeight = cellHeight
+        lastSentRow = state.offset
+        hasVerticalScroller = state.total > state.length
+        layoutDocument(state)
+        // Only a move of the view shows the scroller: output at the bottom
+        // moves `offset` alone, output under a view held in history moves
+        // the distance from the bottom alone.
+        if let previous, !replaced, previous.offset != state.offset,
+           Self.belowView(previous) != Self.belowView(state) {
+            flashScrollers()
+        }
+    }
+
+    private static func belowView(_ state: TermiodStreamTerminal.Scrollbar) -> UInt64 {
+        state.total &- state.offset &- state.length
+    }
+
+    private func layoutDocument(_ state: TermiodStreamTerminal.Scrollbar) {
+        guard cellHeight > 0 else { return }
+        applying = true
+        defer { applying = false }
+        // The padding below the grid stays below the last row, as in Ghostty.
+        let padding = max(0, bounds.height - CGFloat(state.length) * cellHeight)
+        let height = CGFloat(state.total) * cellHeight + padding
+        document.frame = NSRect(x: 0, y: 0, width: bounds.width, height: max(height, bounds.height))
+        guard !liveScrolling else { return }
+        contentView.scroll(to: NSPoint(x: 0, y: CGFloat(Self.belowView(state)) * cellHeight))
+        reflectScrolledClipView(contentView)
+    }
+
+    @objc private func clipBoundsChanged() {
+        guard !applying, let state, cellHeight > 0 else { return }
+        let below = contentView.bounds.minY / cellHeight
+        let top = Double(state.total) - Double(state.length) - Double(below)
+        let row = UInt64(max(0, top.rounded()))
+        guard row != lastSentRow else { return }
+        lastSentRow = row
+        onScrollToRow(row)
+    }
+}
+
 import SwiftUI
 import TermioStream
 
@@ -849,6 +987,7 @@ struct TermiodStreamPane: NSViewRepresentable {
     let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
     let onFocused: () -> Void
+    let onTopEdgeColor: (NSColor) -> Void
 
     func makeNSView(context: Context) -> TermiodStreamView {
         let view = TermiodStreamView(appearance: appearance)
@@ -866,6 +1005,8 @@ struct TermiodStreamPane: NSViewRepresentable {
         view.copyOnSelect = copyOnSelect
         view.sessionID = sessionID
         view.onViewport = onViewport
+        let onTopEdgeColor = onTopEdgeColor
+        view.onTopEdgeColor = { onTopEdgeColor($0) }
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
