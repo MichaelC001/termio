@@ -456,10 +456,9 @@ final class TerminalViewController: UIViewController {
         max(1, terminalView.window?.screen.nativeScale ?? traitCollection.displayScale)
     }
 
+    /// The stream pane draws with the same padding, so the two panes fit the
+    /// same grid.
     private var terminalPadding: CGSize {
-        if streamView != nil {
-            return CGSize(width: Self.terminalPaddingX, height: Self.terminalPaddingY)
-        }
         // Ghostty uses 96 DPI on iOS (72 on macOS). Its config points therefore
         // differ from UIKit points; match Surface.scaledPadding's pixel floor.
         let scale = terminalDisplayScale
@@ -1238,7 +1237,7 @@ final class TerminalViewController: UIViewController {
         return TermiodStreamRenderer.Appearance(
             fontFamily: chain.first ?? "", fallbackFamilies: Array(chain.dropFirst()),
             fontSize: CGFloat(MobileSettings.shared.fontSize) * 96 / 72,
-            paddingX: Self.terminalPaddingX, paddingY: Self.terminalPaddingY, backgroundOpacity: 0)
+            paddingX: terminalPadding.width, paddingY: terminalPadding.height, backgroundOpacity: 0)
     }
 
     private func streamPinched(_ scale: CGFloat) {
