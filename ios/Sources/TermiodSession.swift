@@ -11,7 +11,9 @@ import TermioStream
 /// - **A reattach repaints from a snapshot, not a replay.** The daemon's VT
 ///   hands over the *current* screen (`S`) and live bytes resume on top, rather
 ///   than a torrent of historical escapes that mangles an idle TUI. The phone
-///   reattaches every time it unlocks.
+///   reattaches every time it unlocks. On the stream plane a reattach whose gap
+///   termiod's ring still holds continues the stream instead (`vt_resume`), and
+///   the terminal and its scrollback are kept.
 /// - **The grid is arbitrated.** The PTY's size is a host-side policy over every
 ///   attachment that is rendering — the screen a person is in front of wins — so
 ///   `E resized` is authoritative and this client honours it rather than
@@ -113,6 +115,24 @@ final class TermiodSession: DeviceSession {
     /// bytes, and the pane's focus, said again on every attach.
     private var pendingEvents: [Termiod.InputEvent] = []
     private var lastFocus: Bool?
+    /// Where the stream terminal stands (`vt_resume`): named by
+    /// `stream_position` after a snapshot, advanced by every byte written and
+    /// marker applied, and offered back on a reattach so the terminal is kept.
+    /// Nil while the terminal follows no position termiod named.
+    private var resumeGranted = false
+    private var resumePosition: Termiod.ResumePosition?
+    /// What is left of a resumed stream's replay. A query in it was asked
+    /// while this phone was away, and an answer now would land as typing.
+    private var replayBytesLeft: UInt64 = 0
+    private var replayMarkersLeft: UInt64 = 0
+    /// Read by the terminal's callbacks, which `setTheme` can reach from the
+    /// main thread while it holds `streamLock`.
+    private let replayLock = NSLock()
+    private var writingReplayLocked = false
+    private var writingReplay: Bool {
+        get { replayLock.lock(); defer { replayLock.unlock() }; return writingReplayLocked }
+        set { replayLock.lock(); writingReplayLocked = newValue; replayLock.unlock() }
+    }
 
     init(endpoint: DeviceEndpoint, sessionName: String, offersStream: Bool = false) {
         self.sessionName = sessionName
@@ -134,6 +154,7 @@ final class TermiodSession: DeviceSession {
             granted \(handshake.caps.joined(separator: ","), privacy: .public)
             """)
             hostAnswersGranted = handshake.caps.contains(Termiod.answersCapability)
+            resumeGranted = handshake.caps.contains(Termiod.resumeCapability)
             hostAnswers = false
             hostAnswersStale = false
             // A daemon that streams without input events has already put this
@@ -156,7 +177,16 @@ final class TermiodSession: DeviceSession {
         channel.onData = { [weak self] data in
             guard let self else { return }
             if let terminal = streamTerminal {
+                // A replay ends where live output starts, so a frame is all
+                // one or all the other.
+                let replayed = replayBytesLeft > 0
+                if replayed {
+                    replayBytesLeft -= min(replayBytesLeft, UInt64(data.count))
+                    writingReplay = true
+                }
                 terminal.write(data)
+                if replayed { writingReplay = false }
+                resumePosition?.offset += UInt64(data.count)
                 onStreamData?(data)
             } else {
                 onOutput?(data)
@@ -289,7 +319,8 @@ final class TermiodSession: DeviceSession {
     /// termiod refused it, and answers once the phone has some to give.
     private var capabilities: [String] {
         Termiod.attachCapabilities
-            + (offersStream && !streamRefused ? [Termiod.streamCapability, Termiod.inputCapability] : [])
+            + (offersStream && !streamRefused
+                ? [Termiod.streamCapability, Termiod.inputCapability, Termiod.resumeCapability] : [])
             + (answers != nil ? [Termiod.answersCapability] : [])
     }
 
@@ -322,6 +353,7 @@ final class TermiodSession: DeviceSession {
         let changed = (streamTerminalLocked == nil) != (terminal == nil)
         streamTerminalLocked = terminal
         streamLock.unlock()
+        if terminal == nil { resumePosition = nil }
         guard changed else { return }
         let streaming = terminal != nil
         if streaming { Log.device.info("\(self.sessionName, privacy: .public) is on the stream plane") }
@@ -388,6 +420,9 @@ final class TermiodSession: DeviceSession {
     func reassertGrid() {
         queue.async { [self] in
             guard attached, viewportGrid.rows > 0, viewportGrid.cols > 0 else { return }
+            // The stream terminal is never blank, and a fresh snapshot would
+            // replace the one a resume just kept.
+            guard streamTerminal == nil else { return }
             // A rebuilt surface starts blank and no byte is coming, so this asks
             // for the screen rather than for a size — the device answers a
             // viewport it already has with nothing at all.
@@ -414,7 +449,10 @@ final class TermiodSession: DeviceSession {
                 // session for a screen that had not measured itself.
                 rows: grid.rows,
                 cols: grid.cols,
-                answers: hostAnswersGranted ? answers : nil
+                answers: hostAnswersGranted ? answers : nil,
+                // Only with the terminal that position describes still here:
+                // the bytes termiod replays continue it, and nothing else.
+                resume: resumeGranted && streamTerminal != nil ? resumePosition : nil
             ))
             if hostAnswersGranted, answers != nil { sendAnswers() }
         } catch {
@@ -499,12 +537,33 @@ final class TermiodSession: DeviceSession {
             notify(.closed)
         case .vtResize(let resize):
             // Applied here, before the next `D`: the marker's place in the
-            // stream is the whole contract.
+            // stream is the whole contract. A replayed marker's size report was
+            // answered while this phone was away.
+            let replayed = replayMarkersLeft > 0
+            if replayed {
+                replayMarkersLeft -= 1
+                writingReplay = true
+            }
+            defer { if replayed { writingReplay = false } }
             do {
                 try streamTerminal?.resize(rows: resize.rows, cols: resize.cols, reflow: resize.reflow)
+                resumePosition?.markers += 1
             } catch {
+                // The terminal left the stream here; a resume would continue
+                // from a screen termiod never had.
+                resumePosition = nil
                 Log.device.error("vt_resize on \(self.sessionName, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             }
+        case .streamPosition(let position):
+            replayBytesLeft = 0
+            replayMarkersLeft = 0
+            resumePosition = streamTerminal == nil ? nil : Termiod.ResumePosition(
+                epoch: position.epoch, offset: position.offset, markers: position.markers)
+        case .streamResumed(let resumed):
+            replayBytesLeft = resumed.live - min(resumed.live, resumed.offset)
+            replayMarkersLeft = resumed.liveMarkers
+                - min(resumed.liveMarkers, resumePosition?.markers ?? resumed.liveMarkers)
+            Log.device.info("\(self.sessionName, privacy: .public) resumed its stream at byte \(resumed.offset, privacy: .public)")
         case .vtStale:
             // termiod's VT stopped following the program: its answers would be
             // wrong, and it cannot hand this screen an exact copy again.
@@ -526,6 +585,11 @@ final class TermiodSession: DeviceSession {
             return
         }
         if let native = keyframe.native {
+            // A new terminal follows no position until termiod names the one
+            // this snapshot was taken at.
+            resumePosition = nil
+            replayBytesLeft = 0
+            replayMarkersLeft = 0
             receiveStreamSnapshot(native)
             return
         }
@@ -546,8 +610,14 @@ final class TermiodSession: DeviceSession {
             let terminal = try TermiodStreamTerminal(
                 nativeSnapshot: native,
                 xtversion: "ghostty \(EmbeddedGhostty.version)",
-                onReply: { [weak self] reply in self?.sendDeviceReport(reply) },
+                onReply: { [weak self] reply in
+                    if self?.writingReplay == true { return }
+                    self?.sendDeviceReport(reply)
+                },
                 onSignal: { [weak self] signal in
+                    // A copy replayed from the gap would overwrite whatever the
+                    // person copied since.
+                    if case .clipboard = signal, self?.writingReplay == true { return }
                     DispatchQueue.main.async { self?.onStreamSignal?(signal) }
                 }
             )

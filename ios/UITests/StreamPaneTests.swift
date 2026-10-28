@@ -52,4 +52,27 @@ final class StreamPaneTests: XCTestCase {
             add(attachment)
         }
     }
+
+    /// A capture of a dropped link resuming the stream (`vt_resume`): a proxy
+    /// the tester runs between the app and termiod cuts the connection when
+    /// `/tmp/p6/cut` appears. The screenshots and the log line "resumed its
+    /// stream" are the result; nothing here can read the screen's text.
+    func testStreamResume() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-pair-device", try invite(), "-TermioStreamTerminal", "YES"]
+        app.launch()
+        app.buttons["home.tab.terminals"].tap()
+        let session = app.cells.firstMatch
+        XCTAssertTrue(session.waitForExistence(timeout: 15), "no terminal session")
+        session.tap()
+        let stream = app.textViews["terminal.stream"]
+        XCTAssertTrue(stream.waitForExistence(timeout: 10), "the stream view is not up")
+        stream.typeText("clear; echo before the cut\n")
+        shoot("before", settle: 2)
+        // The simulator shares the Mac's /tmp; a phone cannot run this.
+        XCTAssertTrue(FileManager.default.createFile(atPath: "/tmp/p6/cut", contents: Data()), "no /tmp/p6 to signal the cut")
+        Thread.sleep(forTimeInterval: 8)
+        stream.typeText("echo after the cut\n")
+        shoot("after", settle: 3)
+    }
 }

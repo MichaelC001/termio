@@ -285,6 +285,9 @@ final class WebSocketLink: NSObject {
             guard let self else { return }
             switch result {
             case .success(let message):
+                // A replaced socket's late message would land in the new
+                // connection's stream, where a resumed terminal keeps it.
+                guard task === self.task else { return }
                 switch message {
                 case .string(let text): onText?(text)
                 case .data(let data): onData?(data)
