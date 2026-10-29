@@ -329,6 +329,11 @@ final class TermioStore: ObservableObject {
         }
     }
 
+    /// A file the Files tree should expand down to and select, left by a ⌘-clicked terminal
+    /// link. A pending request rather than an event, because the tree may not be mounted yet
+    /// when the click lands — the inspector is still opening. The tree clears it once done.
+    @Published var pendingFileReveal: String?
+
     /// The 1-based line the editor should reveal when it opens `openFileURL` — set by a
     /// content-search hit (see `FileSearchView`); `nil` for a plain open (top of file).
     @Published var openFileLine: Int?
@@ -2047,6 +2052,12 @@ final class TermioStore: ObservableObject {
         if FileActivation.quickLooks(url) {
             InspectorPanelHost.shared.quickLook(url)
             return
+        }
+        // Show where the file lives, as VS Code does: the Files tab, expanded down to its row.
+        // The tab goes first, because switching tabs closes whatever detail is open.
+        inspectorTab = .files
+        if let root = inspectorCheckout?.localRoot, url.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") {
+            pendingFileReveal = url.path
         }
         filePresentationGeneration &+= 1
         remotePreviewLease = nil

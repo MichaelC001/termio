@@ -144,7 +144,12 @@ struct FileBrowserView: View {
             let outline = browserState.outlineView
             DispatchQueue.main.async { OutlineViewFixups.assertWheelIncrement(on: outline) }
         }
+        .onChange(of: store.pendingFileReveal, initial: true) { _, path in
+            guard let path else { return }
+            Task { await reveal(path) }
+        }
         .onChange(of: browserState.selection) {
+            guard !browserState.isRevealing else { return }
             // The table fires native selection on a clean click — reliably, unlike a
             // click recognizer, which `NSOutlineView`'s own primary-button tracking
             // swallows. So a selection *change* opens: a file opens, a folder opens
@@ -240,6 +245,67 @@ struct FileBrowserView: View {
         // Every click should be observable, including reopening the same file
         // after the overlay was dismissed.
         browserState.selection = nil
+    }
+
+    /// Expands the tree down to `path` and selects its row, leaving the file as the caller
+    /// opened it. The outline exposes no row for a path, so each folder is found by selecting
+    /// it and reading the row back. Each level is listed only once its parent expands, so
+    /// every step waits for its row to appear and gives up after `revealStepTimeout`.
+    private func reveal(_ path: String) async {
+        guard !browserState.isRevealing else { return }
+        defer {
+            browserState.isRevealing = false
+            if store.pendingFileReveal == path { store.pendingFileReveal = nil }
+        }
+        guard let tree else { return }
+        let root = tree.root.hasSuffix("/") ? String(tree.root.dropLast()) : tree.root
+        guard path.hasPrefix(root + "/") else { return }
+        let components = path.dropFirst(root.count + 1).split(separator: "/")
+        var ancestors: [String] = []
+        var current = root
+        for component in components {
+            current += "/" + component
+            ancestors.append(current)
+        }
+        browserState.isRevealing = true
+        for (index, step) in ancestors.enumerated() {
+            guard let row = await selectRow(step, in: tree) else {
+                Log.files.error("reveal stopped: no row for \(step, privacy: .public)")
+                return
+            }
+            guard index < ancestors.count - 1 else {
+                browserState.outlineView?.scrollRowToVisible(row)
+                return
+            }
+            guard let outline = browserState.outlineView, let item = outline.item(atRow: row) else { return }
+            if !outline.isItemExpanded(item) { outline.expandItem(item) }
+        }
+    }
+
+    private static let revealStepTimeout: Duration = .seconds(3)
+
+    /// Selects `path` once the tree has a row for it, and returns that row. The selection is
+    /// cleared before each try, so a row still selected from the previous step never answers.
+    private func selectRow(_ path: String, in tree: DeviceFileTreeModel) async -> Int? {
+        let clock = ContinuousClock()
+        let deadline = clock.now + Self.revealStepTimeout
+        while clock.now < deadline {
+            if tree.node(at: path) != nil {
+                browserState.selection = nil
+                guard await settle() else { return nil }
+                browserState.selection = path
+                guard await settle() else { return nil }
+                if let row = browserState.outlineView?.selectedRow, row >= 0 { return row }
+            } else {
+                guard await settle() else { return nil }
+            }
+        }
+        return nil
+    }
+
+    /// Lets SwiftUI push the selection into the outline, and a listing land.
+    private func settle() async -> Bool {
+        (try? await Task.sleep(for: .milliseconds(30))) != nil
     }
 
     /// Toggle (expand/collapse) the folder whose row was just selected, on the native
