@@ -1501,14 +1501,21 @@ impl Session {
     /// rendering yet is remembered, so its rendering declaration completes the
     /// transfer (`typed_unseen`).
     fn take_size_for_input(&mut self, id: &ClientId) {
-        self.take_size(id);
-        if self.size_owner.as_ref() == Some(id) {
+        let Some(entry) = self.clients.get(id) else {
+            return;
+        };
+        if !entry.role.is_interactive() {
             return;
         }
-        if let Some(entry) = self.clients.get_mut(id) {
-            if entry.role.is_interactive() {
-                entry.typed_unseen = Some(std::time::Instant::now());
+        if entry.rendering && entry.viewport.is_some() {
+            // The newest keystroke wins outright, so no older claim from
+            // another screen may finish after it.
+            for other in self.clients.values_mut() {
+                other.typed_unseen = None;
             }
+            self.take_size(id);
+        } else if let Some(entry) = self.clients.get_mut(id) {
+            entry.typed_unseen = Some(std::time::Instant::now());
         }
     }
 
@@ -3768,13 +3775,18 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             let declared = (rows > 0 && cols > 0).then_some((rows, cols));
             entry.viewport = declared;
             entry.rendering = rendering;
-            let typed = entry
+            if entry
                 .typed_unseen
-                .take()
-                .is_some_and(|at| at.elapsed() <= TYPED_CLAIM_WINDOW);
+                .is_some_and(|at| at.elapsed() > TYPED_CLAIM_WINDOW)
+            {
+                entry.typed_unseen = None;
+            }
+            // A claim is spent only by a declaration that can complete it: one
+            // that renders and has a size. A 0×0 layout pass keeps it.
+            let typed = rendering && declared.is_some() && entry.typed_unseen.take().is_some();
             // Keep the committed grid when a screen parks. A remaining viewer
             // can request the size on its next layout or take it by typing.
-            if rendering && typed {
+            if typed {
                 session.take_size(&id);
                 session.apply_size_policy();
             } else if rendering {
@@ -4843,6 +4855,67 @@ mod tests {
             (session.rows, session.cols),
             (50, 200),
             "an expired claim only requests, and the Mac is still sizing"
+        );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// A pending claim is the last keystroke's, never an older one's; it
+    /// survives a layout pass with no size; and a parked owner's keystroke is
+    /// remembered like anyone else's.
+    #[tokio::test]
+    async fn a_pending_size_claim_is_the_newest_and_waits_for_a_real_viewport() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+
+        // Newer typing elsewhere cancels the claim.
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "the Mac typed after the phone, so the phone's claim is gone"
+        );
+
+        // A 0×0 layout pass does not spend the claim.
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "phone", 0, 0, true);
+        assert_eq!((session.rows, session.cols), (50, 200));
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the claim waited for a viewport that can complete it"
+        );
+
+        // The parked owner's own keystroke is remembered too.
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "nobody was sizing, so the Mac's layout took the size"
+        );
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone typed first and is now showing, so it takes the size back"
         );
 
         session.vt.shut_down();
