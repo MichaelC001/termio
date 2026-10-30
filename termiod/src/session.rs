@@ -1507,12 +1507,13 @@ impl Session {
         if !entry.role.is_interactive() {
             return;
         }
-        if entry.rendering && entry.viewport.is_some() {
-            // The newest keystroke wins outright, so no older claim from
-            // another screen may finish after it.
-            for other in self.clients.values_mut() {
-                other.typed_unseen = None;
-            }
+        let eligible = entry.rendering && entry.viewport.is_some();
+        // The newest keystroke wins outright, so no older claim from any
+        // screen may finish after it. At most one claim is ever pending.
+        for other in self.clients.values_mut() {
+            other.typed_unseen = None;
+        }
+        if eligible {
             self.take_size(id);
         } else if let Some(entry) = self.clients.get_mut(id) {
             entry.typed_unseen = Some(std::time::Instant::now());
@@ -4889,6 +4890,22 @@ mod tests {
             (50, 200),
             "the Mac typed after the phone, so the phone's claim is gone"
         );
+
+        // Newer typing on another hidden screen cancels it too.
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "mac", 50, 200, false);
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "mac");
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone typed last, so the Mac's older claim is gone"
+        );
+        type_into(&mut session, "mac");
 
         // A 0×0 layout pass does not spend the claim.
         declare_viewport(&mut session, "phone", 42, 47, false);
