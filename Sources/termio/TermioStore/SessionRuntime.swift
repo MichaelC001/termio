@@ -44,10 +44,9 @@ final class SessionRuntime {
     /// it keeps running on its box — so this says the *connection* is out, and
     /// it clears the moment a retry gets back in.
     var connectionNotice: String?
-    /// The color along a stream pane's top edge, which the pane's header takes
-    /// so a program that paints its own background reaches the title. Nil until
-    /// a stream view has drawn.
-    var streamTopEdgeColor: NSColor?
+    /// A stream pane's default background, which a program may set with
+    /// OSC 11. The pane's header takes it. Nil until a stream view has drawn.
+    var streamBackgroundColor: NSColor?
     /// The PTY's real grid, from the daemon: the viewport of whichever screen a
     /// person is in front of. The bytes on the wire are wrapped for it, and the
     /// only faithful way to show them is a surface laid out at it — letterboxed

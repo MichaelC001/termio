@@ -103,14 +103,15 @@ public final class TermiodStreamRenderer {
         return fontChanged || paddingChanged
     }
 
-    /// Draws one frame into `layer` if the terminal changed since the last one,
-    /// or `force` asks for it regardless (a resize, focus, or new appearance).
-    /// True when a frame was presented.
-    /// `TermiodStreamFrameBuilder.topEdgeColor` as of the last frame built.
-    public var topEdgeColor: GhosttyColorRgb { builder.topEdgeColor }
+    /// The terminal's default background as of the last frame built, which a
+    /// program may change with OSC 11. Never a row's color: a row scrolls.
+    public var background: GhosttyColorRgb { builder.background }
     /// The terminal's scrollbar state as of the last frame prepared.
     public private(set) var scrollbar: TermiodStreamTerminal.Scrollbar?
 
+    /// Draws one frame into `layer` if the terminal changed since the last one,
+    /// or `force` asks for it regardless (a resize, focus, or new appearance).
+    /// True when a frame was presented.
     @discardableResult
     public func draw(
         _ terminal: TermiodStreamTerminal, into layer: CAMetalLayer, focused: Bool, force: Bool, preedit: String? = nil,
@@ -1196,23 +1197,6 @@ public final class TermiodStreamFrameBuilder {
     public private(set) var columns: UInt16 = 0
     public var rowCount: Int { rowRectangles.count }
 
-    /// The color along the grid's top edge: the top row's background when the
-    /// program painted all of it one color, otherwise the terminal's default
-    /// background, which a program may have changed with OSC 11. The pane's
-    /// header takes it, so a full-screen program's color reaches the title.
-    public var topEdgeColor: GhosttyColorRgb {
-        guard let row = rowEdgeBackgrounds.first, let row, let first = row.first, first.cellX == 0 else {
-            return background
-        }
-        var next = 0
-        for cell in row {
-            guard Int(cell.cellX) == next, cell.r == first.r, cell.g == first.g, cell.b == first.b else {
-                return background
-            }
-            next += max(1, Int(cell.width) / max(1, cellWidth))
-        }
-        return next >= Int(columns) ? GhosttyColorRgb(r: first.r, g: first.g, b: first.b) : background
-    }
     private var cellWidth = 1
     /// The columns where a wide character starts, per row, so a cursor on one
     /// covers both of its cells.
