@@ -218,7 +218,7 @@ struct TerminalPane: View {
                             copyOnSelect: settings.copyOnSelect,
                             onViewport: { grid in store.reportViewport(grid, for: id) },
                             onFocused: { selectFocusedSurface(id) },
-                            onTopEdgeColor: { color in store.runtime(for: id).streamTopEdgeColor = color }
+                            onBackgroundColor: { color in store.runtime(for: id).streamBackgroundColor = color }
                         )
                         // One view per link: a relaunch attaches a new one.
                         .id(ObjectIdentifier(link))
@@ -1759,13 +1759,15 @@ private struct PaneCardChrome: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
-    /// The color a stream pane's program painted along its top edge, as Rex
-    /// carries it into the pane's chrome. A translucent card stays clear.
+    /// A stream pane's default background, which a program may set with
+    /// OSC 11, carried into the pane's chrome. Never the top row's color: that
+    /// changes whenever a colored line scrolls past the top. A translucent
+    /// card stays clear.
     private var programColor: NSColor? {
         guard !settings.isBackgroundTranslucent else { return nil }
         let runtime = store.runtime(for: session.id)
         guard runtime.streamLink != nil else { return nil }
-        return runtime.streamTopEdgeColor
+        return runtime.streamBackgroundColor
     }
 
     private var cardBackground: Color {

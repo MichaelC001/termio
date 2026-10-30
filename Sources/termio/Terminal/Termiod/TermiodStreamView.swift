@@ -19,10 +19,10 @@ final class TermiodStreamView: NSView {
     /// as the viewport declaration the daemon's size policy reads.
     var onViewport: (TerminalGrid) -> Void = { _ in }
     var onFocusChange: (Bool) -> Void = { _ in }
-    /// The color along the grid's top edge, each time it changes, for the
-    /// pane's header (`TermiodStreamFrameBuilder.topEdgeColor`).
-    var onTopEdgeColor: (NSColor) -> Void = { _ in }
-    private var reportedTopEdge: (r: UInt8, g: UInt8, b: UInt8)?
+    /// The terminal's default background, each time it changes, for the
+    /// pane's header (`TermiodStreamRenderer.background`).
+    var onBackgroundColor: (NSColor) -> Void = { _ in }
+    private var reportedBackground: (r: UInt8, g: UInt8, b: UInt8)?
     /// Writes bytes to the session as typed — the link's `send`, which claims
     /// the write token as typing in the embedded surface does. Only Ghostty's
     /// editing bindings use it; they send fixed bytes in any mode.
@@ -269,11 +269,11 @@ final class TermiodStreamView: NSView {
             if let state = renderer.scrollbar {
                 scroller.apply(state, cellHeight: renderer.cellSize.height, replaced: replaced)
             }
-            let edge = renderer.topEdgeColor
-            if reportedTopEdge.map({ $0 != (edge.r, edge.g, edge.b) }) ?? true {
-                reportedTopEdge = (edge.r, edge.g, edge.b)
-                onTopEdgeColor(NSColor(
-                    srgbRed: CGFloat(edge.r) / 255, green: CGFloat(edge.g) / 255, blue: CGFloat(edge.b) / 255, alpha: 1
+            let color = renderer.background
+            if reportedBackground.map({ $0 != (color.r, color.g, color.b) }) ?? true {
+                reportedBackground = (color.r, color.g, color.b)
+                onBackgroundColor(NSColor(
+                    srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1
                 ))
             }
         } catch {
@@ -1007,7 +1007,7 @@ struct TermiodStreamPane: NSViewRepresentable {
     let copyOnSelect: Bool
     let onViewport: (TerminalGrid) -> Void
     let onFocused: () -> Void
-    let onTopEdgeColor: (NSColor) -> Void
+    let onBackgroundColor: (NSColor) -> Void
 
     func makeNSView(context: Context) -> TermiodStreamView {
         let view = TermiodStreamView(appearance: appearance)
@@ -1025,8 +1025,8 @@ struct TermiodStreamPane: NSViewRepresentable {
         view.copyOnSelect = copyOnSelect
         view.sessionID = sessionID
         view.onViewport = onViewport
-        let onTopEdgeColor = onTopEdgeColor
-        view.onTopEdgeColor = { onTopEdgeColor($0) }
+        let onBackgroundColor = onBackgroundColor
+        view.onBackgroundColor = { onBackgroundColor($0) }
         let onFocused = onFocused
         view.onFocusChange = { focused in if focused { onFocused() } }
         view.setAppearance(appearance)
