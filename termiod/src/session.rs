@@ -21,6 +21,11 @@ const RING_CAP: usize = 128 * 1024;
 /// The `vt_resize` markers kept for `vt_resume`, beyond those the ring prunes.
 const STREAM_MARKER_CAP: usize = 4096;
 const READ_CHUNK: usize = 64 * 1024;
+/// How long a keystroke from a screen not yet reported as rendering keeps its
+/// claim on the size. Long enough to cover the Mac's 400 ms visibility
+/// debounce; short enough that a scripted send into a hidden pane does not
+/// take the size when that pane is shown much later.
+const TYPED_CLAIM_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
 mod backlog;
 
@@ -221,6 +226,12 @@ struct ClientEntry {
     /// on a background tab keeps its viewport but cannot control the size.
     viewport: Option<(u16, u16)>,
     rendering: bool,
+    /// When a person typed here while this screen had not yet said it was
+    /// rendering. The Mac debounces visibility and sends keys at once, so the
+    /// keystroke that should move the size can arrive first; the rendering
+    /// declaration that follows within `TYPED_CLAIM_WINDOW` finishes the
+    /// transfer instead of only requesting it.
+    typed_unseen: Option<std::time::Instant>,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
@@ -750,7 +761,7 @@ impl Session {
             return;
         }
         self.status_engine.note_user_input(std::time::Instant::now());
-        self.take_size(id);
+        self.take_size_for_input(id);
         self.apply_size_policy();
         let _ = self.input_tx.send(bytes);
         self.flush_held_replies();
@@ -1484,6 +1495,21 @@ impl Session {
             .unwrap_or(argv0)
             .trim_start_matches('-');
         SHELLS.contains(&name)
+    }
+
+    /// A keystroke takes the size. One from a screen that has not said it is
+    /// rendering yet is remembered, so its rendering declaration completes the
+    /// transfer (`typed_unseen`).
+    fn take_size_for_input(&mut self, id: &ClientId) {
+        self.take_size(id);
+        if self.size_owner.as_ref() == Some(id) {
+            return;
+        }
+        if let Some(entry) = self.clients.get_mut(id) {
+            if entry.role.is_interactive() {
+                entry.typed_unseen = Some(std::time::Instant::now());
+            }
+        }
     }
 
     /// Human input transfers sizing separately from the write token. Device
@@ -3562,6 +3588,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     // zero.
                     viewport: (rows > 0 && cols > 0).then_some((rows, cols)),
                     rendering,
+                    typed_unseen: None,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
@@ -3708,7 +3735,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 // reaches this arm — clients send those on their own frame kind
                 // — which is what keeps a terminal's answer to a query from
                 // moving the size.
-                session.take_size(&id);
+                session.take_size_for_input(&id);
                 session.apply_size_policy();
                 session.close_open_paste();
                 let _ = session.input_tx.send(data);
@@ -3741,9 +3768,16 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             let declared = (rows > 0 && cols > 0).then_some((rows, cols));
             entry.viewport = declared;
             entry.rendering = rendering;
+            let typed = entry
+                .typed_unseen
+                .take()
+                .is_some_and(|at| at.elapsed() <= TYPED_CLAIM_WINDOW);
             // Keep the committed grid when a screen parks. A remaining viewer
             // can request the size on its next layout or take it by typing.
-            if rendering {
+            if rendering && typed {
+                session.take_size(&id);
+                session.apply_size_policy();
+            } else if rendering {
                 session.request_size(&id);
             }
         }
@@ -4753,6 +4787,62 @@ mod tests {
             (session.rows, session.cols),
             (50, 200),
             "typing at the Mac is a person acting; now it resizes"
+        );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The Mac debounces visibility and sends keys at once, so a person who
+    /// shows a pane and types can be heard before the pane says it renders.
+    /// That keystroke still moves the size once the declaration lands; a claim
+    /// older than the window does not, so a scripted send into a hidden pane
+    /// cannot take the size when the pane is shown much later.
+    #[tokio::test]
+    async fn typing_just_before_rendering_still_takes_the_size() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        assert_eq!((session.rows, session.cols), (50, 200));
+
+        type_into(&mut session, "phone");
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "the phone has not said it renders yet"
+        );
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the keystroke that came first finishes the transfer"
+        );
+
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        let stale =
+            std::time::Instant::now() - super::TYPED_CLAIM_WINDOW - std::time::Duration::from_secs(1);
+        session
+            .clients
+            .get_mut(&ClientId::new("phone"))
+            .unwrap()
+            .typed_unseen = Some(stale);
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "an expired claim only requests, and the Mac is still sizing"
         );
 
         session.vt.shut_down();
@@ -5960,6 +6050,7 @@ mod tests {
                     plane: ClientPlane::Raw,
                     viewport: Some((24, 80)),
                     rendering: true,
+                    typed_unseen: None,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
