@@ -1262,13 +1262,30 @@ impl Session {
         }
     }
 
+    /// Removes an attachment, and records who saw it go if it held the size.
+    fn drop_client(&mut self, id: &ClientId) -> Option<ClientEntry> {
+        let entry = self.clients.remove(id)?;
+        self.note_departure(id);
+        Some(entry)
+    }
+
+    /// Called once, right after `id` really left. A departed size owner's
+    /// size holds against the screens still here (`survivors`).
+    fn note_departure(&mut self, id: &ClientId) {
+        if self.size_owner.as_ref() == Some(id) {
+            self.survivors = self.clients.keys().cloned().collect();
+        } else {
+            self.survivors.remove(id);
+        }
+    }
+
     fn remove_dead(&mut self, dead: Vec<ClientId>) {
         if dead.is_empty() {
             return;
         }
         let old_writer = self.writer.clone();
         for id in dead {
-            self.clients.remove(&id);
+            self.drop_client(&id);
         }
         self.sync_grid_diff_interest();
         self.recompute_writer();
@@ -1714,7 +1731,22 @@ impl Session {
     /// Every successful snapshot, whether attach bootstrap or resize/resync
     /// barrier, is followed immediately by `ready`. Attach-only history starts
     /// after `ready`, with buffered live data allowed between staged chunks.
+    /// An attachment whose snapshot fails is dropped, and that is a departure.
     fn finish_snapshot(
+        &mut self,
+        client_id: &ClientId,
+        request_id: u64,
+        result: Result<SidecarCapture, String>,
+    ) -> bool {
+        let present = self.clients.contains_key(client_id);
+        let finished = self.settle_snapshot(client_id, request_id, result);
+        if present && !self.clients.contains_key(client_id) {
+            self.note_departure(client_id);
+        }
+        finished
+    }
+
+    fn settle_snapshot(
         &mut self,
         client_id: &ClientId,
         request_id: u64,
@@ -1948,7 +1980,7 @@ impl Session {
         );
         let old_writer = self.writer.clone();
         for id in ids {
-            if let Some(mut entry) = self.clients.remove(&id) {
+            if let Some(mut entry) = self.drop_client(&id) {
                 let (buffered, _deferred) = entry.plane.settle();
                 release_buffered(&entry.backlog, buffered);
                 let _ = entry.out.send(ClientEvent::Control(Control::Error {
@@ -3689,12 +3721,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         }
         SessionMsg::RemoveClient { id } => {
             let old_writer = session.writer.clone();
-            session.clients.remove(&id);
-            if session.size_owner.as_ref() == Some(&id) {
-                session.survivors = session.clients.keys().cloned().collect();
-            } else {
-                session.survivors.remove(&id);
-            }
+            session.drop_client(&id);
             session.sync_grid_diff_interest();
             if old_writer.as_ref() == Some(&id) {
                 session.recompute_writer();
@@ -4875,6 +4902,43 @@ mod tests {
             (50, 200),
             "an expired claim only requests, and the Mac is still sizing"
         );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The daemon drops a client on its own, such as one whose backlog
+    /// overflowed. That is a departure too: the survivor's automatic report
+    /// must not take the size, even before the socket's own removal arrives.
+    #[tokio::test]
+    async fn a_dropped_size_owner_holds_the_size_like_one_that_left() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "phone");
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        session.remove_dead(vec![ClientId::new("phone")]);
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        // The socket's own removal arrives late and changes nothing.
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("phone"),
+            },
+        );
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
 
         session.vt.shut_down();
         let _ = thread.join();
