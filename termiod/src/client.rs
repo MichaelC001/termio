@@ -316,6 +316,42 @@ pub async fn view() -> Result<crate::view::View> {
     }
 }
 
+/// The host's view, or `None` when no daemon is serving. Unlike `view`, it
+/// never starts one: a question about the host must not create the host.
+pub async fn running_view() -> Result<Option<crate::view::View>> {
+    let sock = paths::socket_path()?;
+    let mut stream = match UnixStream::connect(&sock).await {
+        Ok(stream) => stream,
+        Err(error) if absent_daemon(error.raw_os_error()) => return Ok(None),
+        Err(error) => bail!(
+            "connecting to termiod at {} failed: {error}{}",
+            sock.display(),
+            denial_hint(error.raw_os_error())
+        ),
+    };
+    write_control(
+        &mut stream,
+        &Control::Hello {
+            proto: PROTOCOL_VERSION,
+            min_proto: PROTOCOL_VERSION,
+            role: ChannelRole::Control,
+            caps: vec!["view".to_string()],
+            client: format!("termiod-cli/{}", env!("CARGO_PKG_VERSION")),
+        },
+    )
+    .await?;
+    match read_frame(&mut stream).await? {
+        Some(Frame::Control(Control::HelloOk { .. })) => {}
+        _ => bail!("this host does not answer with a view"),
+    }
+    write_control(&mut stream, &Control::View { seq: Some(1) }).await?;
+    match read_frame(&mut stream).await? {
+        Some(Frame::Control(Control::ViewState { view, .. })) => Ok(Some(*view)),
+        Some(Frame::Control(Control::Error { message, .. })) => bail!(message),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
 /// Register a directory as a project on this host. Returns the project's id.
 pub async fn project_add(path: &str) -> Result<String> {
     let request = Control::ProjectAdd {

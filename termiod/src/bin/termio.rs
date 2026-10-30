@@ -462,7 +462,7 @@ enum AgentVerb {
 
 #[derive(Subcommand)]
 enum SkillVerb {
-    /// Print the skill that `install` writes.
+    /// Print the skill this termio carries.
     Show {
         /// This Mac's skill, which teaches the app's commands, instead of a box's.
         #[arg(long)]
@@ -1106,8 +1106,8 @@ fn edit_distance(left: &str, right: &str) -> usize {
 
 /// `termio whoami`: where this shell runs, from what the session stamped into
 /// its environment. The project, group and pane come from the host's view,
-/// asked only when this shell is a termiod session and the socket answers, so
-/// the command never starts a daemon to answer a question about one.
+/// asked only when this shell is a termiod session, and over a connection that
+/// never starts a daemon to answer a question about one.
 async fn whoami(channel: &Channel, json: bool) -> Result<()> {
     let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
     let session = variable("TERMIO_SESSION")
@@ -1117,13 +1117,12 @@ async fn whoami(channel: &Channel, json: bool) -> Result<()> {
 
     let mut placement = None;
     if let Some(id) = &host_session {
-        if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
-            // The other fields stand on their own, so a host too old to
-            // answer `view` costs only the placement, said on stderr.
-            match termiod::client::view().await {
-                Ok(view) => placement = place_in_view(&view, id),
-                Err(error) => eprintln!("termio: the host did not answer with its view: {error:#}"),
-            }
+        // The other fields stand on their own, so a host too old to answer
+        // `view` costs only the placement, said on stderr.
+        match termiod::client::running_view().await {
+            Ok(Some(view)) => placement = place_in_view(&view, id),
+            Ok(None) => {}
+            Err(error) => eprintln!("termio: the host did not answer with its view: {error:#}"),
         }
     }
     let (project, group, pane) = match placement {
@@ -1963,9 +1962,10 @@ that posted it.";
 
 const SKILL_HELP: &str = "\
 Print or install the skill that teaches agents the termio command. The text is
-built into this binary, so `show` prints exactly what `install` writes, and a
-new termio brings a new skill. Hooks are separate: `termio agent install`
-writes both.";
+built into termio, so a new termio brings a new skill. `show` prints the text
+this termio carries. `install` asks this machine's termiod to write the text it
+carries, which is the same text when both come from one install. Hooks are
+separate: `termio agent install` writes both.";
 
 const SKILL_EXAMPLES: &str = "\
 Examples:

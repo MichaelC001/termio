@@ -134,8 +134,10 @@ skill. They change at different rates. The skill changes with every CLI
 release. The hooks change rarely. `termio skill install` writes only the
 skill, and `termio skill uninstall` removes only the skill.
 
-The skill text is compiled into the binary. `termio skill show` prints those
-bytes, which are exactly what `install` writes.
+The skill text is compiled into the binary. `termio skill show` prints the
+text this client carries. `install` asks the running termiod, which writes
+the text *it* carries. The two match when both come from one install. A
+termiod that is older than the client writes its own, older text.
 
 Rex goes one step further. Its installed skill tells the agent to run `rex
 skill show`, so the agent always reads the text of the installed `rex`. An

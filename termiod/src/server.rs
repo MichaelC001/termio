@@ -882,8 +882,9 @@ pub struct SkillInstallArgs {
     json: bool,
 }
 
-/// The skill `install_skill` writes, so `termio skill show` prints the same
-/// bytes the agents get.
+/// The skill this build carries. `install_skill` asks the running daemon,
+/// which writes the skill *it* carries: the same bytes when the client and the
+/// daemon come from one install, older ones from a daemon not yet upgraded.
 pub fn skill_text(this_mac: bool) -> &'static str {
     use agent::install::Reporter;
     if this_mac { Reporter::ThisMac } else { Reporter::Device }.skill()
