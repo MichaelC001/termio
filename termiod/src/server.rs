@@ -863,7 +863,64 @@ pub async fn install_agents(args: InstallArgs) -> Result<()> {
         if args.this_mac { Reporter::ThisMac } else { Reporter::Device },
         Default::default(),
     );
-    print_install(request, args.json).await
+    print_install(request, args.json).await.map(|_| ())
+}
+
+/// `termio skill install` — the skill half of `agent install`, alone.
+#[derive(Args)]
+pub struct SkillInstallArgs {
+    /// Only these agent ids (repeatable). Default: every agent in the catalog
+    /// whose CLI is installed here.
+    #[arg(long)]
+    agent: Vec<String>,
+    /// Install this Mac's skill, which teaches the app's commands, instead of
+    /// a box's.
+    #[arg(long)]
+    this_mac: bool,
+    /// Print the reply as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// The skill this build carries. `install_skill` asks the running daemon,
+/// which writes the skill *it* carries: the same bytes when the client and the
+/// daemon come from one install, older ones from a daemon not yet upgraded.
+pub fn skill_text(this_mac: bool) -> &'static str {
+    use agent::install::Reporter;
+    if this_mac { Reporter::ThisMac } else { Reporter::Device }.skill()
+}
+
+pub async fn install_skill(args: SkillInstallArgs) -> Result<()> {
+    use agent::install::{HalfAction, InstallRequest, Reporter};
+    let request = InstallRequest::new(
+        (!args.agent.is_empty()).then_some(args.agent),
+        HalfAction::Leave,
+        HalfAction::Install,
+        if args.this_mac { Reporter::ThisMac } else { Reporter::Device },
+        Default::default(),
+    );
+    let failed = print_install(request, args.json).await?;
+    if failed > 0 {
+        bail!("could not install the skill for {failed} agent(s)");
+    }
+    Ok(())
+}
+
+/// `termio skill uninstall` — sweep the skill from every agent; hooks stay.
+pub async fn uninstall_skill(json: bool) -> Result<()> {
+    use agent::install::{HalfAction, InstallRequest, Reporter};
+    let request = InstallRequest::new(
+        None,
+        HalfAction::Leave,
+        HalfAction::Remove,
+        Reporter::Device,
+        Default::default(),
+    );
+    let failed = print_install(request, json).await?;
+    if failed > 0 {
+        bail!("could not remove the skill for {failed} agent(s)");
+    }
+    Ok(())
 }
 
 /// `termio agent uninstall` — remove every agent integration termio installed
@@ -877,30 +934,38 @@ pub async fn uninstall_agents(json: bool) -> Result<()> {
         Reporter::Device,
         Default::default(),
     );
-    print_install(request, json).await
+    print_install(request, json).await.map(|_| ())
 }
 
-async fn print_install(request: agent::install::InstallRequest, json: bool) -> Result<()> {
+/// Prints what an install did, and returns how many of its rows failed.
+async fn print_install(request: agent::install::InstallRequest, json: bool) -> Result<usize> {
     use agent::install::{HalfAction, InstallStatus};
-    let removing = request.hooks == HalfAction::Remove && request.skills == HalfAction::Remove;
+    let removed = match (request.hooks, request.skills) {
+        (HalfAction::Remove, HalfAction::Remove) => {
+            Some("removed every agent integration termio installed")
+        }
+        (HalfAction::Remove, _) => Some("removed termio's hooks from every agent"),
+        (_, HalfAction::Remove) => Some("removed termio's skill from every agent"),
+        _ => None,
+    };
     let results = client::install_agents(request).await?;
+    let failed = results
+        .iter()
+        .filter(|result| result.status == InstallStatus::Failed)
+        .count();
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);
-        return Ok(());
+        return Ok(failed);
     }
     if results.is_empty() {
         // Removal sweeps every directory termio has ever written into and has
         // nothing per-agent to report; an install with nothing to report found
         // no agent on this box at all.
-        println!(
-            "{}",
-            if removing {
-                "removed every agent integration termio installed"
-            } else {
-                "no agent on this box declares an integration to install"
-            }
-        );
-        return Ok(());
+        match removed {
+            Some(sentence) => println!("{sentence}"),
+            None => println!("no agent on this box declares an integration to install"),
+        }
+        return Ok(failed);
     }
     for result in &results {
         let mark = match result.status {
@@ -914,7 +979,7 @@ async fn print_install(request: agent::install::InstallRequest, json: bool) -> R
             None => println!(),
         }
     }
-    Ok(())
+    Ok(failed)
 }
 
 #[cfg(test)]

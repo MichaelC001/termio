@@ -124,7 +124,7 @@ impl Reporter {
     }
 
     /// Which bundled skill this machine gets.
-    fn skill(&self) -> &'static str {
+    pub fn skill(&self) -> &'static str {
         if self.is_local() {
             MAC_SKILL
         } else {
@@ -1555,6 +1555,10 @@ fn sync_skills(
         // removed or redirected is swept too.
         let copies = rehomed_all(catalog.all.iter(), request);
         let mut seen = HashSet::new();
+        // A sweep that worked has nothing per-agent to say. One that could not
+        // delete a folder says so, or the skill stays while the reply claims
+        // it is gone.
+        let mut failures = Vec::new();
         for agent in catalog.bundled.iter().chain(catalog.all.iter()).chain(copies.iter()) {
             let Some(directory) = agent.skill_dir.as_deref() else {
                 continue;
@@ -1568,12 +1572,20 @@ fn sync_skills(
                     // termio owns the folder, so there is no user content in it
                     // to preserve.
                     if let Err(error) = std::fs::remove_dir_all(&resolved) {
-                        log(&format!("could not remove {}: {error}", resolved.display()));
+                        let reason = format!("could not remove {}: {error}", resolved.display());
+                        log(&reason);
+                        failures.push(InstallResult::new(
+                            agent,
+                            "skill",
+                            &folder,
+                            InstallStatus::Failed,
+                            Some(reason),
+                        ));
                     }
                 }
             }
         }
-        return Vec::new();
+        return failures;
     }
 
     let skill = request.reporter.skill();

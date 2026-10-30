@@ -41,6 +41,7 @@ const ROOT_TEMPLATE: &str = "\
 Sessions:
   session     List, start, drive and close sessions [alias: sessions]
   agent       Report an agent's status; install or remove agent hooks
+  skill       Print or install the skill that teaches agents termio
   notify      Post a macOS notification from an agent
 
 Machines:
@@ -53,6 +54,7 @@ App:
   sim         Drive the iOS Simulator shown in the Simulator pane
 
 Other:
+  whoami      Show the session, channel and host this shell runs in
   version     Show the versions of this client, the app and termiod
   completion  Print a shell completion script
   help        Print help for a command
@@ -121,6 +123,13 @@ enum Verb {
         verb: AgentVerb,
     },
 
+    /// Print or install the skill that teaches agents termio.
+    #[command(long_about = SKILL_HELP, after_help = SKILL_EXAMPLES)]
+    Skill {
+        #[command(subcommand)]
+        verb: SkillVerb,
+    },
+
     /// Drive the iOS Simulator shown in the Simulator pane — look, tap, type.
     #[command(long_about = SIM_HELP)]
     Sim {
@@ -153,6 +162,14 @@ enum Verb {
     /// One table: this client, the running app, this machine's termiod, and
     /// every remote as of its last connect.
     Version {
+        /// Print the reply as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Show the session, channel and host this shell runs in.
+    #[command(long_about = WHOAMI_HELP)]
+    Whoami {
         /// Print the reply as JSON.
         #[arg(long)]
         json: bool,
@@ -436,6 +453,26 @@ enum AgentVerb {
     Install(termiod::server::InstallArgs),
 
     /// Remove every agent integration termio has installed on this machine.
+    Uninstall {
+        /// Print the reply as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillVerb {
+    /// Print the skill this termio carries.
+    Show {
+        /// This Mac's skill, which teaches the app's commands, instead of a box's.
+        #[arg(long)]
+        this_mac: bool,
+    },
+
+    /// Install the skill, and only the skill, for the agents on this machine.
+    Install(termiod::server::SkillInstallArgs),
+
+    /// Remove the skill from every agent on this machine. Hooks stay.
     Uninstall {
         /// Print the reply as JSON.
         #[arg(long)]
@@ -945,10 +982,22 @@ async fn main() -> Result<()> {
         }
         Some(Verb::Directory(words)) => {
             let directory = words.first().map(String::as_str).unwrap_or(".");
+            if !Path::new(directory).exists() && !path_shaped(directory) {
+                unknown_command(directory)
+            }
             open_project(&channel, Path::new(directory)).await
         }
         Some(Verb::View { json }) => print_view(json).await,
         Some(Verb::Version { json }) => version::print_table(&channel, provenance, json).await,
+        Some(Verb::Whoami { json }) => whoami(&channel, json).await,
+        Some(Verb::Skill { verb }) => match verb {
+            SkillVerb::Show { this_mac } => {
+                print!("{}", termiod::server::skill_text(this_mac));
+                Ok(())
+            }
+            SkillVerb::Install(args) => termiod::server::install_skill(args).await,
+            SkillVerb::Uninstall { json } => termiod::server::uninstall_skill(json).await,
+        },
         Some(Verb::Completion { shell }) => {
             let mut command = Cli::command();
             let name = command.get_name().to_string();
@@ -1004,6 +1053,152 @@ async fn on_host(host: String, verb: Option<Verb>) -> Result<()> {
         Some(_) => false,
     };
     termiod::server::run_on_host(&host, tty)
+}
+
+/// Whether a word was meant as a path, so a missing one is reported as a
+/// missing directory rather than as an unknown command.
+fn path_shaped(word: &str) -> bool {
+    word.contains('/') || word.starts_with('.') || word.starts_with('~')
+}
+
+/// `termio [DIR]` receives every word clap does not know, so a mistyped
+/// command lands here. It is reported the way clap reports any other unknown
+/// command: the same wording, the same tip, the same exit code 2.
+fn unknown_command(word: &str) -> ! {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let mut command = Cli::command();
+    command.build();
+    let mut error = clap::Error::new(ErrorKind::InvalidSubcommand).with_cmd(&command);
+    error.insert(ContextKind::InvalidSubcommand, ContextValue::String(word.to_string()));
+    let closest = command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
+        .map(|sub| sub.get_name())
+        .map(|name| (edit_distance(word, name), name))
+        .filter(|(distance, name)| *distance <= (name.len() / 3).max(1))
+        .min();
+    if let Some((_, name)) = closest {
+        error.insert(
+            ContextKind::SuggestedSubcommand,
+            ContextValue::Strings(vec![name.to_string()]),
+        );
+    }
+    error.insert(
+        ContextKind::Usage,
+        ContextValue::StyledStr(command.render_usage()),
+    );
+    error.exit()
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (row, left_char) in left.chars().enumerate() {
+        let mut current = vec![row + 1];
+        for (column, right_char) in right.iter().enumerate() {
+            let substitution = previous[column] + usize::from(left_char != *right_char);
+            current.push(substitution.min(previous[column + 1] + 1).min(current[column] + 1));
+        }
+        previous = current;
+    }
+    previous[right.len()]
+}
+
+/// `termio whoami`: where this shell runs, from what the session stamped into
+/// its environment. The project, group and pane come from the host's view,
+/// asked only when this shell is a termiod session, and over a connection that
+/// never starts a daemon to answer a question about one.
+async fn whoami(channel: &Channel, json: bool) -> Result<()> {
+    let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let session = variable("TERMIO_SESSION")
+        .map(|id| format!("{}://session/{}", channel.url_scheme(), id.to_lowercase()));
+    let host_session = variable("TERMIOD_SESSION_ID");
+    let socket = termiod::paths::socket_path()?;
+
+    let mut placement = None;
+    if let Some(id) = &host_session {
+        // The other fields stand on their own, so a host too old to answer
+        // `view`, or too wedged to answer at all, costs only the placement,
+        // said on stderr.
+        let lookup = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            termiod::client::running_view(),
+        );
+        match lookup.await {
+            Ok(Ok(Some(view))) => placement = place_in_view(&view, id),
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => eprintln!("termio: the host did not answer with its view: {error:#}"),
+            Err(_) => eprintln!("termio: the host did not answer with its view within 2s"),
+        }
+    }
+    let (project, group, pane) = match placement {
+        Some((project, group, pane)) => (project, Some(group), Some(pane)),
+        None => (None, None, None),
+    };
+
+    let host = host_name();
+    let app = app_running(channel);
+    let reply = serde_json::json!({
+        "session": session,
+        "host_session": host_session,
+        "project": project,
+        "group": group,
+        "pane": pane,
+        "host": host,
+        "channel": channel.name,
+        "app_running": app,
+        "socket": socket.display().to_string(),
+    });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reply)?);
+        return Ok(());
+    }
+    let show = |value: &Option<String>| value.clone().unwrap_or_else(|| "none".to_string());
+    println!("session:      {}", show(&session));
+    println!("host session: {}", show(&host_session));
+    println!("project:      {}", show(&project));
+    println!("group:        {}", show(&group));
+    println!("pane:         {}", show(&pane));
+    println!("host:         {}", show(&host));
+    println!("channel:      {}", channel.name);
+    println!("app:          {}", if app { "running" } else { "not running" });
+    println!("socket:       {}", socket.display());
+    Ok(())
+}
+
+/// The project path, group id and pane id that hold the host session `id`.
+/// A loose group has no project.
+fn place_in_view(
+    view: &termiod::view::View,
+    id: &str,
+) -> Option<(Option<String>, String, String)> {
+    let holds = |group: &termiod::view::Group| {
+        group.panes().into_iter().find_map(|pane| match &pane.kind {
+            termiod::view::PaneKind::Terminal { session } if session == id => {
+                Some((group.id.clone(), pane.id.clone()))
+            }
+            _ => None,
+        })
+    };
+    for project in &view.projects {
+        if let Some((group, pane)) = project.groups.iter().find_map(holds) {
+            return Some((Some(project.path.clone()), group, pane));
+        }
+    }
+    view.loose
+        .iter()
+        .find_map(holds)
+        .map(|(group, pane)| (None, group, pane))
+}
+
+fn host_name() -> Option<String> {
+    let mut buffer = [0u8; 256];
+    let result = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
+    if result != 0 {
+        return None;
+    }
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
+    String::from_utf8(buffer[..end].to_vec()).ok()
 }
 
 fn fail(message: &str) -> ! {
@@ -1771,6 +1966,25 @@ Post a macOS notification from the running app, such as \"build finished\" or
 default title, the calling agent's name. Clicking the banner shows the session
 that posted it.";
 
+const SKILL_HELP: &str = "\
+Print or install the skill that teaches agents the termio command. The text is
+built into termio, so a new termio brings a new skill. `show` prints the text
+this termio carries. `install` asks this machine's termiod to write the text it
+carries, which is the same text when both come from one install. Hooks are
+separate: `termio agent install` writes both.";
+
+const SKILL_EXAMPLES: &str = "\
+Examples:
+  termio skill show
+  termio skill install --agent claudeCode
+  termio skill uninstall";
+
+const WHOAMI_HELP: &str = "\
+Show the session, project, group and pane this shell runs in, with the host,
+the channel and the socket it talks to. A value this shell does not have
+prints as `none`. Run it inside a Termio session to see where a command will
+land.";
+
 const SIM_HELP: &str = "\
 Drive the iOS Simulator shown in termio's Simulator pane, so an agent can run
 and check an iOS app the way the person watching would. Coordinates are device
@@ -2030,6 +2244,27 @@ mod tests {
         for name in listed {
             assert!(visible.iter().any(|v| v == name), "the root help lists `{name}`, which is not a command");
         }
+    }
+
+    /// A missing word that looks like a path stays a missing directory; any
+    /// other missing word is a mistyped command.
+    #[test]
+    fn only_path_shaped_words_are_treated_as_directories() {
+        assert!(path_shaped("./app"));
+        assert!(path_shaped("~/code"));
+        assert!(path_shaped("code/app"));
+        assert!(path_shaped(".hidden"));
+        assert!(!path_shaped("sesion"));
+        assert!(!path_shaped("whoami"));
+    }
+
+    #[test]
+    fn edit_distance_counts_single_character_edits() {
+        assert_eq!(edit_distance("sesion", "session"), 1);
+        assert_eq!(edit_distance("whoamii", "whoami"), 1);
+        assert_eq!(edit_distance("sever", "server"), 1);
+        assert_eq!(edit_distance("view", "view"), 0);
+        assert_eq!(edit_distance("", "skill"), 5);
     }
 
     #[test]

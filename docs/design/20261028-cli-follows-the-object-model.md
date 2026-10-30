@@ -1,10 +1,10 @@
 ---
 domd-id: 72a583cd-d669-4d53-b9d6-bb38ab0f2961
 title: The CLI follows the object model
-status: draft
+status: active
 type: design
 created: 2026-10-28
-updated: 2026-10-28
+updated: 2026-10-29
 related:
   - 20261025-termiod-owns-the-view.md
   - 20260808-sessions-cli-v3-command-design.md
@@ -20,9 +20,10 @@ related:
 ## Decision
 
 1. **One parser.** Every command is parsed by the clap tree in
-   `termiod/src/bin/termio.rs`. `scripts/termio` keeps only the job of
-   finding the right binary for the channel, then `exec`s it with the full
-   argument list.
+   `termiod/src/bin/termio.rs`. This is already true of what ships: every
+   app bundle carries that binary as `termio`. `scripts/termio` is only the
+   fallback for a build made without the Rust toolchain, and it is deleted
+   once those builds are not needed.
 2. **Nouns first.** The grammar is `termio <noun> <verb>`. The nouns are the
    objects termiod already owns: session, pane, project, server. No noun
    exists only in the CLI.
@@ -41,28 +42,24 @@ ends. Nothing in this design changes `--wait`.
 
 ## Why
 
-### The defects, as measured on 2026-10-28
+### The defects, as measured on 2026-10-29
 
-The `termio` on `PATH` is `scripts/termio`, a POSIX shell script of 991
-lines. It parses `open`, `session`, `notify`, `pair` and `agent report`
-itself. It passes `server`, `session create|attach|kill` and part of
-`agent report` to the Rust binary. These are the results of running it:
+These are the results of running the shipped client, `termio 0.67.0+2566`,
+the binary the app installs at `/usr/local/bin/termio`:
 
 | Command | Output | Defect |
 |---|---|---|
 | `termio bogus` | `termio: not a directory: bogus` | The `termio [DIR]` shortcut takes every typo as a path. |
-| `termio whoami` | `termio: not a directory: whoami` | Same defect. A missing command looks like a bad path. |
-| `termio session --help` | the full top-level help | A noun's help does not list its own verbs. |
-| `termio session bogus` | `unknown sessions command 'bogus'`, then 20 lines of usage | The error uses the old name `sessions`. The usage hides the error. |
-| `termio session list --help` | hand-written prose | Not the same format as `termio server --help`, which clap writes. |
-| `termio agent install` | `unknown agent command 'install'` | The Rust binary has `agent install`. The script does not route it. |
+| `termio whoami` | `termio: not a directory: whoami` | The command does not exist, and the error says so wrongly. |
+| `termio skill` | `termio: not a directory: skill` | The command does not exist. The skill is installed only together with the hooks. |
 
-The top-level help also says `session create|attach ... (needs the Rust
-client)`. That line tells the user there are two clients. The decision in
-#779 and #788 says `termio` is the only CLI.
+`session --help`, `session bogus` and `agent install` are correct in the
+shipped client. clap writes their help and errors.
 
-All six defects have one cause. Two parsers share one command name, and
-neither of them owns the whole grammar.
+A first draft of this doc listed six defects. It measured
+`scripts/termio`, reached through a developer's symlink earlier on `PATH`,
+not the shipped client. Measure the binary users run:
+`file -L "$(command -v termio)"` must say Mach-O.
 
 ### What Rex does better
 
@@ -93,11 +90,11 @@ The status column says what exists on `origin/main` today.
 | `termio session focus <session>` | `pane.focus` on the session's pane | Exists on the app socket. Moves to the view op in phase 3. |
 | `termio pane split \| focus \| zoom \| resize \| move \| close` | `pane_split`, `pane_focus`, `pane_zoom`, `split_resize`, `pane_move`, `pane_close` | Only `pane_close` exists. The rest is phase 2 of the view design. |
 | `termio project list \| open \| remove` | `view`, `project_add`, `project_remove` | The ops exist. The CLI verbs do not. |
-| `termio view [--json]` | `view` | In the source. Not in the installed CLI. |
+| `termio view [--json]` | `view` | Exists. |
 | `termio events [--type <t,…>]` | the `ViewChanged` and status streams | New verb. `ViewChanged` exists. |
 | `termio api list \| describe \| call` | the framed protocol | New. |
-| `termio whoami` | none; reads the environment | New. |
-| `termio skill show \| install \| uninstall` | none; writes skill files | New. Splits the skill out of `agent install`. |
+| `termio whoami` | `view`, only inside a termiod session | Done. |
+| `termio skill show \| install \| uninstall` | the install request, with the hooks half left alone | Done. |
 | `termio agent report \| install \| uninstall` | hook contract | Exists. `install` keeps the hooks. |
 | `termio server status \| logs \| stop \| deploy \| tailscale` | `termiod` lifecycle | Exists. Already in clap. |
 | `termio pair`, `termio notify`, `termio sim`, `termio version`, `termio completion` | unchanged | Exist. |
@@ -111,9 +108,10 @@ The shortcuts:
 | `termio focus <pane>` | `termio pane focus <pane>` |
 | `termio zoom [--off]` | `termio pane zoom` on `TERMIO_PANE` |
 
-The bare form `termio DIR` stays, with one change. It is accepted only when
-`DIR` exists as a path. Any other word is an unknown command, and the error
-suggests the closest command.
+The bare form `termio DIR` stays, with one change. A word that does not exist
+on disk and does not look like a path is an unknown command. clap's own error
+reports it, with the closest command as a tip, and exits 2. A missing word that
+looks like a path, such as `./app`, still reports a missing directory.
 
 ### `whoami`
 
@@ -121,20 +119,32 @@ suggests the closest command.
 It prints these fields, and the same fields with `--json`:
 
 - the session link, from `TERMIO_SESSION`
-- the pane id, from `TERMIO_PANE`
-- the project and the host
-- the channel, `release` or `dev`, and the socket it talks to
+- the host session id, from `TERMIOD_SESSION_ID`
+- the project, group and pane that hold that host session, from the view
+- the host name, the channel, whether the app runs, and the daemon socket
 
-It sends nothing to the host. When a field is missing, it prints `none`. It
-does not guess.
+It asks for the view only when the shell is a termiod session and the socket
+accepts a connection. So it never starts a daemon. When a field is missing,
+it prints `none`. It does not guess.
 
 ### `skill`
 
-`agent install` installs two things today: the status hooks and the
-`termio` skill. They change at different rates. The skill changes with every
-CLI release. The hooks change rarely. `termio skill install` writes only the
-skill. `termio skill show` prints the skill that this CLI would install, so a
-user can compare it with the installed copy.
+`agent install` installs two things: the status hooks and the `termio`
+skill. They change at different rates. The skill changes with every CLI
+release. The hooks change rarely. `termio skill install` writes only the
+skill, and `termio skill uninstall` removes only the skill.
+
+The skill text is compiled into the binary. `termio skill show` prints the
+text this client carries. `install` asks the running termiod, which writes
+the text *it* carries. The two match when both come from one install. A
+termiod that is older than the client writes its own, older text.
+
+Rex goes one step further. Its installed skill tells the agent to run `rex
+skill show`, so the agent always reads the text of the installed `rex`. An
+upgrade then updates every agent with no reinstall. termio should do the
+same, because a stale installed skill is why the old names `sessions` and
+`answer` must stay. The step is not taken yet. It changes the file the Mac
+app writes and compares byte for byte, so it gets its own PR.
 
 ### `events`
 
@@ -158,12 +168,13 @@ for each op. It also makes the protocol testable by hand.
 - **JSON is the contract.** Every command takes `--json`, including `server`
   and `version`. The shape is the protocol object, not a reformatted copy.
   Changes to it are additive only.
-- **Exit codes stay as v3 set them.** `0` ok, `1` error, `2` termio is not
-  running, `3` timed out with the target still running. A usage error exits
-  `2` in clap. That collides with "termio is not running". Use clap's
-  `exit_code` override to make usage errors exit `64`, the BSD `EX_USAGE`.
+- **Exit codes stay as v3 and the docs set them.** `0` ok, `1` error, `2` a
+  usage error, `3` timed out with the target still running. `watch` also exits
+  `2` when the app closes its stream. That overlap is harmless: a usage error
+  happens before any stream opens. Moving usage errors to `64` was considered
+  and rejected, because `cli.mdx` publishes `2` as the contract.
 - **Errors are one line plus one next step.** An unknown command prints the
-  error and `did you mean …?`. It never prints the full usage.
+  error and the closest command as a tip. It never prints the full usage.
 - **Old names are hidden aliases.** `sessions`, `answer`, `spawn` and
   `watch` keep working. Help does not list them. They are removed when the
   installed skill no longer uses them, not before. Agents on users' machines
@@ -220,12 +231,11 @@ addresses, JSON as the contract, push instead of poll, and the exit codes.
 
 Each phase ships on its own.
 
-1. **One parser.** Move `open`, `session`, `notify`, `pair` and `agent` into
-   clap. Reduce `scripts/termio` to binary resolution plus `exec`. This adds
-   no commands. It fixes every defect in the table above, and it gives the
-   installed CLI the `view` and `completion` commands that already exist in
-   the source.
-2. **`whoami` and `skill`.** Both are small and need no protocol change.
+1. **One parser.** Done for what ships. The typo fix for `termio [DIR]` is
+   done. What is left: delete `scripts/termio` once no build needs a client
+   made without Rust.
+2. **`whoami` and `skill`.** Done. The skill stub that reads `termio skill
+   show` is its own PR.
 3. **`pane` and the shortcuts.** Ships with phase 2 of the view design,
    when `pane_split` and the other ops land in termiod.
 4. **`events` and `api`.** `watch` becomes an alias.
@@ -235,19 +245,15 @@ Each phase ships on its own.
 ## Risks
 
 - **The hook contract.** Every agent hook calls `termio agent report` on
-  every turn. Phase 1 must keep its flags, its output and its speed. The path
-  that hooks call must not change: global agent configs never store a path
-  derived from the app bundle. Measure the start time of the Rust binary
-  against the script before and after.
-- **Channel resolution.** The script picks the binary by `TERMIOD_BIN`, then
-  by the bundle it runs from. That logic is the reason the script exists. It
-  stays in the script, and it must stay correct for the dev channel.
+  every turn. No phase may change its flags, its output or its speed. The
+  path that hooks call must not change: global agent configs never store a
+  path derived from the app bundle.
+- **Deleting the shell fallback.** A dev build made without the Rust
+  toolchain has only `scripts/termio`. Deleting it leaves such a build with
+  no CLI.
 - **App-only verbs.** `session focus` and `session list` answer from the app
-  when it runs, and from termiod when it does not. Phase 1 moves the parsing,
-  not that routing. Any change to routing is a separate PR.
-- **Exit code 2.** Scripts that check for `2` today read it as "termio is not
-  running". Moving usage errors to `64` keeps that meaning. Not checked:
-  whether any current script depends on a usage error exiting `1`.
+  when it runs, and from termiod when it does not. Any change to that routing
+  is a separate PR.
 
 ## Open questions
 

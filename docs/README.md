@@ -48,6 +48,7 @@ from the real front matter).
 | active | design | [Remote-access design lessons: sleep reachability, stable domains, identity, monetization](design/20260705-remote-access-lessons.md) |
 | active | design | [Research brief — termiod Session Protocol (for design agent)](design/20260730-_research-session-protocol-brief.md) |
 | active | design | [Sessions CLI v2 — reliability & command design](design/20260724-sessions-cli-v2.md) |
+| active | design | [The CLI follows the object model](design/20261028-cli-follows-the-object-model.md) |
 | active | design | [The client VT follows the stream](design/20261024-client-vt-follows-the-stream.md) |
 | active | research | [Reading list: PTYs, SSH, and detachable remote terminals](READING.md) |
 | active | rfc | [可扩展 Agent —— 配置化定义 + 配置化 Hook](design/20260707-agent-extensibility.md) |
@@ -130,7 +131,6 @@ from the real front matter).
 | draft | design | [termiod — Agent-native session mux](design/20260730-termiod-session-mux.md) |
 | draft | design | [termiod owns the view](design/20261025-termiod-owns-the-view.md) |
 | draft | design | [termiod Session Protocol](design/20260730-termiod-session-protocol.md) |
-| draft | design | [The CLI follows the object model](design/20261028-cli-follows-the-object-model.md) |
 | draft | design | [远程访问与中转策略（tunelo / BYO-tunnel）](design/20260705-remote-access-relay-strategy.md) |
 | draft | essay | [How Claude Code Got the Mouse: Reverse-Engineering the Clickable Terminal](essays/how-claude-code-got-the-mouse.md) |
 | draft | rfc | [零前置远程访问：把 dev tunnels 的形状搬到 termio](design/20260827-remote-access-dev-tunnels-model.md) |
