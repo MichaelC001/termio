@@ -1118,11 +1118,17 @@ async fn whoami(channel: &Channel, json: bool) -> Result<()> {
     let mut placement = None;
     if let Some(id) = &host_session {
         // The other fields stand on their own, so a host too old to answer
-        // `view` costs only the placement, said on stderr.
-        match termiod::client::running_view().await {
-            Ok(Some(view)) => placement = place_in_view(&view, id),
-            Ok(None) => {}
-            Err(error) => eprintln!("termio: the host did not answer with its view: {error:#}"),
+        // `view`, or too wedged to answer at all, costs only the placement,
+        // said on stderr.
+        let lookup = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            termiod::client::running_view(),
+        );
+        match lookup.await {
+            Ok(Ok(Some(view))) => placement = place_in_view(&view, id),
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => eprintln!("termio: the host did not answer with its view: {error:#}"),
+            Err(_) => eprintln!("termio: the host did not answer with its view within 2s"),
         }
     }
     let (project, group, pane) = match placement {
