@@ -453,10 +453,11 @@ def main():
     read_until(m2, "attached to demo")
     replay = drain(m2, 0.4)
     check("reattach: ring replay shows prior output", b"MARKER_ONE" in replay)
+    # Before any typing: opening a session nobody else holds sizes it.
+    check("reattach: an unheld session takes the new grid (40x100)", wait_for_size("demo", (40, 100)))
     os.write(m2, b"echo MARKER_TWO\r")
     check("reattach: input works", b"MARKER_TWO" in read_until(m2, "MARKER_TWO"))
     check("reattach: same process (pid unchanged)", session_pid("demo") == pid_before)
-    check("reattach: an unheld session takes the new grid (40x100)", session_size("demo") == (40, 100))
     os.write(m2, b"\x1c")
     p2.wait(timeout=5)
     cli("kill", "demo")

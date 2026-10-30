@@ -10,6 +10,7 @@ use crate::pty::Pty;
 use crate::tombstone::EndReason;
 use bytes::Bytes;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -443,6 +444,11 @@ struct Session {
     /// Only this viewer's declared viewport can resize the PTY. Input transfers
     /// ownership; layout and reconnects only request it when nobody is sizing.
     size_owner: Option<ClientId>,
+    /// The screens that were attached when the size owner left. Their layout
+    /// reports are automatic, so the departed owner's size holds against them
+    /// (§12). A screen that attaches afterwards is a person opening the
+    /// session, and may take the size.
+    survivors: HashSet<ClientId>,
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
@@ -1436,15 +1442,11 @@ impl Session {
     /// particular, rotation and reconnecting a phone must not take the size
     /// from a Mac somebody is using.
     ///
-    /// A departed owner still holds the size against requests (§12: leaving is
-    /// not using). The survivor's report on being handed the token is
-    /// automatic, not a person; it takes the size only by typing.
+    /// A departed owner still holds the size against the screens that saw it
+    /// leave (`survivors`): the report a survivor sends on being handed the
+    /// token is automatic, not a person, so it takes the size only by typing.
     fn request_size(&mut self, id: &ClientId) {
-        let owner_departed = self
-            .size_owner
-            .as_ref()
-            .is_some_and(|owner| !self.clients.contains_key(owner));
-        if self.policy_size().is_none() && !owner_departed {
+        if self.policy_size().is_none() && !self.survivors.contains(id) {
             self.take_size(id);
         }
         if self.size_owner.as_ref() == Some(id) {
@@ -1535,6 +1537,7 @@ impl Session {
             entry.role.is_interactive() && entry.rendering && entry.viewport.is_some()
         }) {
             self.size_owner = Some(id.clone());
+            self.survivors.clear();
         }
     }
 
@@ -2575,6 +2578,7 @@ fn start(
         writer: None,
         next_seq: 0,
         size_owner: None,
+        survivors: HashSet::new(),
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
@@ -3686,6 +3690,11 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         SessionMsg::RemoveClient { id } => {
             let old_writer = session.writer.clone();
             session.clients.remove(&id);
+            if session.size_owner.as_ref() == Some(&id) {
+                session.survivors = session.clients.keys().cloned().collect();
+            } else {
+                session.survivors.remove(&id);
+            }
             session.sync_grid_diff_interest();
             if old_writer.as_ref() == Some(&id) {
                 session.recompute_writer();
@@ -4131,6 +4140,7 @@ mod tests {
                 writer: None,
                 next_seq: 0,
                 size_owner: None,
+                survivors: std::collections::HashSet::new(),
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
@@ -4985,6 +4995,21 @@ mod tests {
         );
         type_into(&mut session, "mac");
         assert_eq!((session.rows, session.cols), (50, 200));
+
+        // A screen that arrives after the owner left is a person opening the
+        // session, such as a phone reconnecting under a new id.
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("mac"),
+            },
+        );
+        let _returning = attach_interactive_client_at(&mut session, "phone-again", 42, 47);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "nobody saw the owner leave, so the new screen sizes the session"
+        );
 
         session.vt.shut_down();
         let _ = thread.join();
@@ -6168,6 +6193,7 @@ mod tests {
             writer: Some(ClientId::new("writer")),
             next_seq: 2,
             size_owner: None,
+            survivors: std::collections::HashSet::new(),
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,
