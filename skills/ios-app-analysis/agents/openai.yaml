@@ -1,0 +1,3 @@
+interface:
+  display_name: "iOS App Analysis"
+  short_description: "Inspect iPhone apps and diagnose companion rendering"
