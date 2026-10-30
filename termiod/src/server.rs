@@ -866,6 +866,54 @@ pub async fn install_agents(args: InstallArgs) -> Result<()> {
     print_install(request, args.json).await
 }
 
+/// `termio skill install` — the skill half of `agent install`, alone.
+#[derive(Args)]
+pub struct SkillInstallArgs {
+    /// Only these agent ids (repeatable). Default: every agent in the catalog
+    /// whose CLI is installed here.
+    #[arg(long)]
+    agent: Vec<String>,
+    /// Install this Mac's skill, which teaches the app's commands, instead of
+    /// a box's.
+    #[arg(long)]
+    this_mac: bool,
+    /// Print the reply as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// The skill `install_skill` writes, so `termio skill show` prints the same
+/// bytes the agents get.
+pub fn skill_text(this_mac: bool) -> &'static str {
+    use agent::install::Reporter;
+    if this_mac { Reporter::ThisMac } else { Reporter::Device }.skill()
+}
+
+pub async fn install_skill(args: SkillInstallArgs) -> Result<()> {
+    use agent::install::{HalfAction, InstallRequest, Reporter};
+    let request = InstallRequest::new(
+        (!args.agent.is_empty()).then_some(args.agent),
+        HalfAction::Leave,
+        HalfAction::Install,
+        if args.this_mac { Reporter::ThisMac } else { Reporter::Device },
+        Default::default(),
+    );
+    print_install(request, args.json).await
+}
+
+/// `termio skill uninstall` — sweep the skill from every agent; hooks stay.
+pub async fn uninstall_skill(json: bool) -> Result<()> {
+    use agent::install::{HalfAction, InstallRequest, Reporter};
+    let request = InstallRequest::new(
+        None,
+        HalfAction::Leave,
+        HalfAction::Remove,
+        Reporter::Device,
+        Default::default(),
+    );
+    print_install(request, json).await
+}
+
 /// `termio agent uninstall` — remove every agent integration termio installed
 /// on this machine.
 pub async fn uninstall_agents(json: bool) -> Result<()> {
@@ -882,7 +930,14 @@ pub async fn uninstall_agents(json: bool) -> Result<()> {
 
 async fn print_install(request: agent::install::InstallRequest, json: bool) -> Result<()> {
     use agent::install::{HalfAction, InstallStatus};
-    let removing = request.hooks == HalfAction::Remove && request.skills == HalfAction::Remove;
+    let removed = match (request.hooks, request.skills) {
+        (HalfAction::Remove, HalfAction::Remove) => {
+            Some("removed every agent integration termio installed")
+        }
+        (HalfAction::Remove, _) => Some("removed termio's hooks from every agent"),
+        (_, HalfAction::Remove) => Some("removed termio's skill from every agent"),
+        _ => None,
+    };
     let results = client::install_agents(request).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&results)?);
@@ -892,14 +947,10 @@ async fn print_install(request: agent::install::InstallRequest, json: bool) -> R
         // Removal sweeps every directory termio has ever written into and has
         // nothing per-agent to report; an install with nothing to report found
         // no agent on this box at all.
-        println!(
-            "{}",
-            if removing {
-                "removed every agent integration termio installed"
-            } else {
-                "no agent on this box declares an integration to install"
-            }
-        );
+        match removed {
+            Some(sentence) => println!("{sentence}"),
+            None => println!("no agent on this box declares an integration to install"),
+        }
         return Ok(());
     }
     for result in &results {

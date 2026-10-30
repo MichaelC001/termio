@@ -124,7 +124,7 @@ impl Reporter {
     }
 
     /// Which bundled skill this machine gets.
-    fn skill(&self) -> &'static str {
+    pub fn skill(&self) -> &'static str {
         if self.is_local() {
             MAC_SKILL
         } else {

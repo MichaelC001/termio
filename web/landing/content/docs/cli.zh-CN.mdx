@@ -3,8 +3,8 @@ title: 命令行工具
 description: termio 命令——从 shell 打开项目，以及让你或另一个 Agent 派生、驱动、监督会话的 termio session 编排 API。
 x-i18n:
   source_path: cli.mdx
-  source_hash: bab8b7badd494c930ab1b4a200264e58488401d825f6b56c07c20edaa5d6feb1
-  generated_at: 2026-10-26
+  source_hash: 42408e51ef67824c375f2a6d8f8f91e26c60e00d2cda0f7708c91b5389adc2d1
+  generated_at: 2026-10-30
 ---
 
 `termio` 是这个应用在 shell 一侧的入口：它打开项目，而通过 `termio session`，它就是
@@ -205,6 +205,30 @@ termio -H mybox server deploy        # 先在那边安装或更新 server
 
 `server deploy` 是唯一在本地运行的命令，因为正是它把构建放到那台设备上。其他命令都在那边
 运行，所以那台设备用它自己的构建来回答。参见 [远程主机](/docs/remote-hosts)。
+
+## 我在哪儿：`whoami`
+
+`termio whoami` 显示当前 shell 所在的会话、项目、分组和窗格，以及它连接的主机、channel 和
+socket。shell 没有的值显示为 `none`。在对「这个会话」执行命令之前先运行它，就能知道命令会落在
+哪里。
+
+```bash
+termio whoami
+termio whoami --json
+```
+
+## Agent 技能：`skill`
+
+Termio 用一个技能教 Agent 使用它的命令。技能的文本内置在 `termio` 里，所以新版本的 Termio
+会带来新的技能。
+
+```bash
+termio skill show        # 按 install 写入的原样打印技能
+termio skill install     # 为这台机器上的每个 Agent 安装它
+termio skill uninstall   # 移除它；hooks 保留
+```
+
+`termio agent install` 会同时安装技能和状态 hooks。
 
 ## 被派生的会话知道谁派生了它
 

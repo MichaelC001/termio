@@ -250,6 +250,31 @@ termio -H mybox server deploy        # install or update the server there first
 a build on that machine. Every other command runs there, so the machine answers
 with its own build. See [Remote hosts](/docs/remote-hosts).
 
+## Where am I: `whoami`
+
+`termio whoami` shows the session, project, group and pane the current shell
+runs in, with the host, the channel and the socket it talks to. A value the
+shell does not have prints as `none`. Run it before a command that acts on
+"this session", to see where that command will land.
+
+```bash
+termio whoami
+termio whoami --json
+```
+
+## The agent skill: `skill`
+
+Termio teaches agents its commands with a skill. The skill's text is built into
+`termio`, so a new version of Termio brings a new skill.
+
+```bash
+termio skill show        # print the skill exactly as install writes it
+termio skill install     # install it for every agent on this machine
+termio skill uninstall   # remove it; hooks stay
+```
+
+`termio agent install` installs the skill and the status hooks together.
+
 ## Spawned sessions know their caller
 
 When one Termio session spawns another, the delivered prompt opens with a short
