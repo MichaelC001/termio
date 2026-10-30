@@ -10,6 +10,7 @@ use crate::pty::Pty;
 use crate::tombstone::EndReason;
 use bytes::Bytes;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,11 @@ const RING_CAP: usize = 128 * 1024;
 /// The `vt_resize` markers kept for `vt_resume`, beyond those the ring prunes.
 const STREAM_MARKER_CAP: usize = 4096;
 const READ_CHUNK: usize = 64 * 1024;
+/// How long a keystroke from a screen not yet reported as rendering keeps its
+/// claim on the size. Long enough to cover the Mac's 400 ms visibility
+/// debounce; short enough that a scripted send into a hidden pane does not
+/// take the size when that pane is shown much later.
+const TYPED_CLAIM_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 pub const KEYFRAME_EVERY_FRAMES: u32 = 256;
 mod backlog;
 
@@ -218,14 +224,15 @@ struct ClientEntry {
     /// `None` is an attachment with no viewport at all — it has not laid out
     /// yet, or it never will (a relay with no surface that declines to speak
     /// for the one downstream of it). `rendering` is the other axis: a Mac pane
-    /// on a background tab keeps its viewport and stops counting, so the
-    /// session springs back to the width of whoever is still looking.
+    /// on a background tab keeps its viewport but cannot control the size.
     viewport: Option<(u16, u16)>,
     rendering: bool,
-    /// Where this attachment sits in most-recently-used order (`note_use`).
-    /// The session sizes to the highest one that is rendering: the screen a
-    /// person is actually in front of.
-    used: u64,
+    /// When a person typed here while this screen had not yet said it was
+    /// rendering. The Mac debounces visibility and sends keys at once, so the
+    /// keystroke that should move the size can arrive first; the rendering
+    /// declaration that follows within `TYPED_CLAIM_WINDOW` finishes the
+    /// transfer instead of only requesting it.
+    typed_unseen: Option<std::time::Instant>,
     /// Attach-only history staging. Resize barriers discard any remainder and
     /// deliberately do not restage it; resize/reflow history is a later policy.
     staged_history: VecDeque<Bytes>,
@@ -434,11 +441,14 @@ struct Session {
     clients: HashMap<ClientId, ClientEntry>,
     writer: Option<ClientId>,
     next_seq: u64,
-    /// Ticks on every `note_use`, ordering attachments by when a person was
-    /// last on them. A counter rather than a clock: it only ever needs to be
-    /// compared, and a monotonic integer is the same answer in a test as it is
-    /// under a wall clock that jumped.
-    use_clock: u64,
+    /// Only this viewer's declared viewport can resize the PTY. Input transfers
+    /// ownership; layout and reconnects only request it when nobody is sizing.
+    size_owner: Option<ClientId>,
+    /// The screens that were attached when the size owner left. Their layout
+    /// reports are automatic, so the departed owner's size holds against them
+    /// (§12). A screen that attaches afterwards is a person opening the
+    /// session, and may take the size.
+    survivors: HashSet<ClientId>,
     next_snapshot_request: u64,
     ring: VecDeque<Bytes>,
     ring_bytes: usize,
@@ -757,7 +767,7 @@ impl Session {
             return;
         }
         self.status_engine.note_user_input(std::time::Instant::now());
-        self.note_use(id);
+        self.take_size_for_input(id);
         self.apply_size_policy();
         let _ = self.input_tx.send(bytes);
         self.flush_held_replies();
@@ -1252,13 +1262,30 @@ impl Session {
         }
     }
 
+    /// Removes an attachment, and records who saw it go if it held the size.
+    fn drop_client(&mut self, id: &ClientId) -> Option<ClientEntry> {
+        let entry = self.clients.remove(id)?;
+        self.note_departure(id);
+        Some(entry)
+    }
+
+    /// Called once, right after `id` really left. A departed size owner's
+    /// size holds against the screens still here (`survivors`).
+    fn note_departure(&mut self, id: &ClientId) {
+        if self.size_owner.as_ref() == Some(id) {
+            self.survivors = self.clients.keys().cloned().collect();
+        } else {
+            self.survivors.remove(id);
+        }
+    }
+
     fn remove_dead(&mut self, dead: Vec<ClientId>) {
         if dead.is_empty() {
             return;
         }
         let old_writer = self.writer.clone();
         for id in dead {
-            self.clients.remove(&id);
+            self.drop_client(&id);
         }
         self.sync_grid_diff_interest();
         self.recompute_writer();
@@ -1420,32 +1447,28 @@ impl Session {
         }
     }
 
-    /// The size this session should be: the viewport of the attachment being
-    /// used — the one whose device most recently saw a person. `None` when no
-    /// candidate has a viewport at all: every viewer left, or every one of them
-    /// is on another tab or has not laid out yet.
-    ///
-    /// Only interactive attachments are candidates, for the same reason only
-    /// they are ranked for the write token: an observer attached without a tty
-    /// has no screen a viewport could be about, so `termio read` tailing a
-    /// session never resizes the window someone is working in.
-    ///
-    /// This is tmux's `latest`, and the reason it is safe here is that the
-    /// trigger is narrow. `use_clock` moves on the three things a person does —
-    /// typing, resizing that screen, opening the session there — and never on a
-    /// byte the terminal answered a query with. The old implementation bound the
-    /// size to the write token and had *both ends* re-assert their own grid,
-    /// which turned one misclassified byte into a full-speed resize loop; the
-    /// daemon is the only thing that resizes now, so a stray use costs one
-    /// resize rather than an oscillation
-    /// (`docs/design/20260901-pty-size-is-not-the-write-token.md`).
     fn policy_size(&self) -> Option<(u16, u16)> {
-        self.clients
-            .values()
+        self.size_owner
+            .as_ref()
+            .and_then(|id| self.clients.get(id))
             .filter(|entry| entry.role.is_interactive() && entry.rendering)
-            .filter(|entry| entry.viewport.is_some())
-            .max_by_key(|entry| entry.used)
             .and_then(|entry| entry.viewport)
+    }
+
+    /// A viewport report records a preference, not an interaction. In
+    /// particular, rotation and reconnecting a phone must not take the size
+    /// from a Mac somebody is using.
+    ///
+    /// A departed owner still holds the size against the screens that saw it
+    /// leave (`survivors`): the report a survivor sends on being handed the
+    /// token is automatic, not a person, so it takes the size only by typing.
+    fn request_size(&mut self, id: &ClientId) {
+        if self.policy_size().is_none() && !self.survivors.contains(id) {
+            self.take_size(id);
+        }
+        if self.size_owner.as_ref() == Some(id) {
+            self.apply_size_policy();
+        }
     }
 
     /// Whether the thing on screen is a shell, which is the one class of
@@ -1501,19 +1524,37 @@ impl Session {
         SHELLS.contains(&name)
     }
 
-    /// Records that a person is on this attachment's device, so the session
-    /// sizes to its screen from now on.
-    ///
-    /// Stamped by typing, by a viewport declaration (somebody resized that
-    /// window or opened its sidebar), and by the attach itself (somebody opened
-    /// the session there). Deliberately not by output, by a device report, or by
-    /// anything the daemon does on its own: those are the terminal talking, not
-    /// the person, and sizing must never follow them.
-    fn note_use(&mut self, id: &ClientId) {
-        self.use_clock += 1;
-        let clock = self.use_clock;
-        if let Some(entry) = self.clients.get_mut(id) {
-            entry.used = clock;
+    /// A keystroke takes the size. One from a screen that has not said it is
+    /// rendering yet is remembered, so its rendering declaration completes the
+    /// transfer (`typed_unseen`).
+    fn take_size_for_input(&mut self, id: &ClientId) {
+        let Some(entry) = self.clients.get(id) else {
+            return;
+        };
+        if !entry.role.is_interactive() {
+            return;
+        }
+        let eligible = entry.rendering && entry.viewport.is_some();
+        // The newest keystroke wins outright, so no older claim from any
+        // screen may finish after it. At most one claim is ever pending.
+        for other in self.clients.values_mut() {
+            other.typed_unseen = None;
+        }
+        if eligible {
+            self.take_size(id);
+        } else if let Some(entry) = self.clients.get_mut(id) {
+            entry.typed_unseen = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Human input transfers sizing separately from the write token. Device
+    /// reports and focus notifications never pass through here.
+    fn take_size(&mut self, id: &ClientId) {
+        if self.clients.get(id).is_some_and(|entry| {
+            entry.role.is_interactive() && entry.rendering && entry.viewport.is_some()
+        }) {
+            self.size_owner = Some(id.clone());
+            self.survivors.clear();
         }
     }
 
@@ -1521,7 +1562,7 @@ impl Session {
     ///
     /// This is the only thing in the daemon that resizes a session, and (§12)
     /// it runs only when a person acts: an arrival with a screen, a keystroke,
-    /// a viewport declared while rendering. Never on a departure, a death, or
+    /// the size owner declaring its viewport. Never on a departure, a death, or
     /// a screen parking — leaving is not using, and recomputing on the way out
     /// handed the size to whichever unattended window happened to remain,
     /// which made every phone lock/unlock cycle cost two full TUI reflows.
@@ -1690,7 +1731,22 @@ impl Session {
     /// Every successful snapshot, whether attach bootstrap or resize/resync
     /// barrier, is followed immediately by `ready`. Attach-only history starts
     /// after `ready`, with buffered live data allowed between staged chunks.
+    /// An attachment whose snapshot fails is dropped, and that is a departure.
     fn finish_snapshot(
+        &mut self,
+        client_id: &ClientId,
+        request_id: u64,
+        result: Result<SidecarCapture, String>,
+    ) -> bool {
+        let present = self.clients.contains_key(client_id);
+        let finished = self.settle_snapshot(client_id, request_id, result);
+        if present && !self.clients.contains_key(client_id) {
+            self.note_departure(client_id);
+        }
+        finished
+    }
+
+    fn settle_snapshot(
         &mut self,
         client_id: &ClientId,
         request_id: u64,
@@ -1924,7 +1980,7 @@ impl Session {
         );
         let old_writer = self.writer.clone();
         for id in ids {
-            if let Some(mut entry) = self.clients.remove(&id) {
+            if let Some(mut entry) = self.drop_client(&id) {
                 let (buffered, _deferred) = entry.plane.settle();
                 release_buffered(&entry.backlog, buffered);
                 let _ = entry.out.send(ClientEvent::Control(Control::Error {
@@ -2553,7 +2609,8 @@ fn start(
         clients: HashMap::new(),
         writer: None,
         next_seq: 0,
-        use_clock: 0,
+        size_owner: None,
+        survivors: HashSet::new(),
         next_snapshot_request: 1,
         ring: VecDeque::new(),
         ring_bytes: 0,
@@ -3506,17 +3563,6 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 ClientRole::Observer
             };
             let old_writer = session.writer.clone();
-            // Opening a session on a device is somebody using that device, so
-            // the newcomer sizes it — unless it arrived with no screen in front
-            // of it, which is nobody using anything. Same rule as
-            // `SessionMsg::Viewport` below, at the one moment that message has
-            // not been sent yet.
-            let use_stamp = if rendering {
-                session.use_clock += 1;
-                session.use_clock
-            } else {
-                0
-            };
             // A resume continues the stream plane where it stopped, so it is
             // only taken whole: every replayed byte is reserved first, and a
             // replay that does not fit falls back to a fresh snapshot.
@@ -3594,8 +3640,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                     // zero.
                     viewport: (rows > 0 && cols > 0).then_some((rows, cols)),
                     rendering,
-                    // The Mac springs back the moment it is typed in again.
-                    used: use_stamp,
+                    typed_unseen: None,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
@@ -3650,10 +3695,6 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // Attaching is a viewer arriving, not a device taking over. The
             // token travels by typing — both ends claim on input — so the only
             // attach that takes it is the one that finds nobody holding it.
-            // What this attach *does* move is the size: opening a session on a
-            // device is somebody using it, and the session sizes to the screen
-            // in front of a person. That is `apply_size_policy` below and it is
-            // deliberately not this decision.
             if interactive && session.writer.is_none() {
                 session.grant_writer(&id);
             }
@@ -3666,7 +3707,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
             // size opens a barrier, and `begin_pending` is what supersedes the
             // bootstrap `S` with one taken at the new grid. Reversing these two
             // would leave the newcomer's own snapshot describing the old size.
-            session.apply_size_policy();
+            session.request_size(&id);
             let _ = reply.send(AddClientReply {
                 writer: is_writer,
                 rows: session.rows,
@@ -3680,7 +3721,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
         }
         SessionMsg::RemoveClient { id } => {
             let old_writer = session.writer.clone();
-            session.clients.remove(&id);
+            session.drop_client(&id);
             session.sync_grid_diff_interest();
             if old_writer.as_ref() == Some(&id) {
                 session.recompute_writer();
@@ -3746,7 +3787,7 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 // reaches this arm — clients send those on their own frame kind
                 // — which is what keeps a terminal's answer to a query from
                 // moving the size.
-                session.note_use(&id);
+                session.take_size_for_input(&id);
                 session.apply_size_policy();
                 session.close_open_paste();
                 let _ = session.input_tx.send(data);
@@ -3777,22 +3818,24 @@ fn handle_msg(session: &mut Session, msg: SessionMsg) -> Option<EndReason> {
                 return None;
             };
             let declared = (rows > 0 && cols > 0).then_some((rows, cols));
-            if entry.viewport == declared && entry.rendering == rendering {
-                return None;
-            }
             entry.viewport = declared;
             entry.rendering = rendering;
-            // Resizing a window, collapsing its sidebar, turning a phone: the
-            // person is on this device. A screen that only stopped rendering is
-            // not — nobody is looking at it, so it must not take the size with
-            // it on the way out, and (§12) it must not hand the size to some
-            // other screen on the way out either: a phone going to a pocket is
-            // exactly this message with `rendering: false`, and recomputing
-            // here is what snapped every session back to an unattended Mac
-            // window the moment the phone locked.
-            if rendering {
-                session.note_use(&id);
+            if entry
+                .typed_unseen
+                .is_some_and(|at| at.elapsed() > TYPED_CLAIM_WINDOW)
+            {
+                entry.typed_unseen = None;
+            }
+            // A claim is spent only by a declaration that can complete it: one
+            // that renders and has a size. A 0×0 layout pass keeps it.
+            let typed = rendering && declared.is_some() && entry.typed_unseen.take().is_some();
+            // Keep the committed grid when a screen parks. A remaining viewer
+            // can request the size on its next layout or take it by typing.
+            if typed {
+                session.take_size(&id);
                 session.apply_size_policy();
+            } else if rendering {
+                session.request_size(&id);
             }
         }
         SessionMsg::Inject { data } => {
@@ -4123,7 +4166,8 @@ mod tests {
                 clients: HashMap::new(),
                 writer: None,
                 next_seq: 0,
-                use_clock: 0,
+                size_owner: None,
+                survivors: std::collections::HashSet::new(),
                 next_snapshot_request: 1,
                 ring: VecDeque::new(),
                 ring_bytes: 0,
@@ -4563,14 +4607,7 @@ mod tests {
         let _ = thread.join();
     }
 
-    /// The session is the size of the screen a person is in front of, and the
-    /// write token is not that signal.
-    ///
-    /// This is the whole of the policy. Every assertion here used to be false
-    /// twice over: the size first followed whoever typed last *through the
-    /// token*, so any byte that read as input moved it, and then followed the
-    /// smallest viewer, so a phone left open on a session held a 200-column pane
-    /// at 47 for as long as it stayed there.
+    /// Attaching only requests the size; actual input transfers it.
     #[tokio::test]
     async fn the_session_is_the_viewport_of_the_device_being_used() {
         let Sidecar {
@@ -4587,16 +4624,18 @@ mod tests {
         let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
         assert_eq!(
             session.policy_size(),
-            Some((42, 47)),
-            "opening it on the phone is using the phone"
+            Some((50, 200)),
+            "opening it on the phone must not take the Mac's size"
         );
 
         // Taking the token is not using the device: a client claims it to be
         // allowed to type, and the claim can arrive from a queued keystroke or a
         // handover. Only the typing itself counts.
-        assert!(claim_writer(&mut session, "mac"));
-        assert_eq!(session.policy_size(), Some((42, 47)), "a claim is not a use");
+        assert!(claim_writer(&mut session, "phone"));
+        assert_eq!(session.policy_size(), Some((50, 200)), "a claim is not a use");
 
+        type_into(&mut session, "phone");
+        assert_eq!(session.policy_size(), Some((42, 47)));
         type_into(&mut session, "mac");
         assert_eq!(
             session.policy_size(),
@@ -4634,12 +4673,8 @@ mod tests {
         let _ = thread.join();
     }
 
-    /// Resizing a window is using it: the pane that just widened is the one
-    /// somebody has their hands on, so the session follows it there without
-    /// waiting for a keystroke. This is the report that started it — collapsing
-    /// the inspector while a second viewer was attached moved nothing at all.
     #[tokio::test]
-    async fn changing_a_viewport_is_using_that_device() {
+    async fn only_the_size_owners_viewport_changes_the_pty() {
         let Sidecar {
             commands,
             results: _results,
@@ -4647,27 +4682,107 @@ mod tests {
             thread,
         } = spawn_sidecar(24, 80).unwrap();
         let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
 
         let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
         let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
-        assert_eq!(session.policy_size(), Some((42, 47)));
+        assert_eq!((session.rows, session.cols), (50, 200));
 
+        // Rotation records the phone's latest preference without reflowing
+        // the terminal somebody is using on the Mac.
+        declare_viewport(&mut session, "phone", 22, 90, true);
         declare_viewport(&mut session, "mac", 50, 240, true);
+        assert_eq!((session.rows, session.cols), (50, 240));
         assert_eq!(
-            session.policy_size(),
-            Some((50, 240)),
-            "the Mac's sidebar collapsed; the session is the Mac's again"
+            session.clients[&ClientId::new("phone")].viewport,
+            Some((22, 90))
         );
+
+        type_into(&mut session, "phone");
+        assert_eq!((session.rows, session.cols), (22, 90));
+        declare_viewport(&mut session, "mac", 45, 180, true);
+        assert_eq!((session.rows, session.cols), (22, 90));
+        declare_viewport(&mut session, "phone", 44, 48, true);
+        assert_eq!((session.rows, session.cols), (44, 48));
+
+        type_into(&mut session, "mac");
+        assert_eq!((session.rows, session.cols), (45, 180));
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    #[tokio::test]
+    async fn stream_input_takes_the_size_but_focus_and_device_replies_do_not() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        assert!(claim_writer(&mut session, "phone"));
+
+        handle_msg(
+            &mut session,
+            SessionMsg::InputEvent {
+                id: ClientId::new("phone"),
+                event: crate::protocol::Event::Focus { focused: true },
+            },
+        );
+        session.write_replies(b"\x1b[1;1R".to_vec());
+        assert_eq!((session.rows, session.cols), (50, 200));
+
+        handle_msg(
+            &mut session,
+            SessionMsg::InputEvent {
+                id: ClientId::new("phone"),
+                event: crate::protocol::Event::Paste {
+                    text: "hello".into(),
+                    more: false,
+                },
+            },
+        );
+        assert_eq!((session.rows, session.cols), (42, 47));
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    #[tokio::test]
+    async fn returning_to_a_parked_screen_does_not_take_the_size_back() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        assert_eq!(session.policy_size(), None);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        // An unchanged declaration may acquire an unowned size, but never
+        // steal an owned one. Otherwise a surviving viewer could not recover.
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!((session.rows, session.cols), (50, 200));
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!((session.rows, session.cols), (50, 200));
+        type_into(&mut session, "phone");
+        assert_eq!((session.rows, session.cols), (42, 47));
 
         session.vt.shut_down();
         let _ = thread.join();
     }
 
-    /// Zellij's refinement: a pane on a background tab is not rendering, so it
-    /// stops holding the session down to its width. Without this a Mac window
-    /// left open on another workspace would pin every session it has a pane for.
     #[tokio::test]
-    async fn an_attachment_that_stopped_rendering_stops_counting() {
+    async fn reconnecting_a_viewer_does_not_take_the_size() {
         let Sidecar {
             commands,
             results: _results,
@@ -4675,21 +4790,22 @@ mod tests {
             thread,
         } = spawn_sidecar(24, 80).unwrap();
         let (mut session, _events) = test_session(commands, queue);
-
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
         let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
         let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
-        assert_eq!(session.policy_size(), Some((42, 47)));
-
-        declare_viewport(&mut session, "phone", 42, 47, false);
-        assert_eq!(
-            session.policy_size(),
-            Some((50, 200)),
-            "the phone put the session away; the Mac gets its width back"
+        type_into(&mut session, "phone");
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("phone"),
+            },
         );
-
-        declare_viewport(&mut session, "phone", 42, 47, true);
-        assert_eq!(session.policy_size(), Some((42, 47)), "and back again");
-
+        assert_eq!((session.rows, session.cols), (42, 47));
+        type_into(&mut session, "mac");
+        let _reconnected = attach_interactive_client_at(&mut session, "phone-new", 42, 47);
+        assert_eq!((session.rows, session.cols), (50, 200));
+        type_into(&mut session, "phone-new");
+        assert_eq!((session.rows, session.cols), (42, 47));
         session.vt.shut_down();
         let _ = thread.join();
     }
@@ -4714,6 +4830,7 @@ mod tests {
 
         let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
         let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "phone");
         assert_eq!((session.rows, session.cols), (42, 47));
 
         declare_viewport(&mut session, "phone", 42, 47, false);
@@ -4728,6 +4845,176 @@ mod tests {
             (session.rows, session.cols),
             (50, 200),
             "typing at the Mac is a person acting; now it resizes"
+        );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The Mac debounces visibility and sends keys at once, so a person who
+    /// shows a pane and types can be heard before the pane says it renders.
+    /// That keystroke still moves the size once the declaration lands; a claim
+    /// older than the window does not, so a scripted send into a hidden pane
+    /// cannot take the size when the pane is shown much later.
+    #[tokio::test]
+    async fn typing_just_before_rendering_still_takes_the_size() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        assert_eq!((session.rows, session.cols), (50, 200));
+
+        type_into(&mut session, "phone");
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "the phone has not said it renders yet"
+        );
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the keystroke that came first finishes the transfer"
+        );
+
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        let stale =
+            std::time::Instant::now() - super::TYPED_CLAIM_WINDOW - std::time::Duration::from_secs(1);
+        session
+            .clients
+            .get_mut(&ClientId::new("phone"))
+            .unwrap()
+            .typed_unseen = Some(stale);
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "an expired claim only requests, and the Mac is still sizing"
+        );
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// The daemon drops a client on its own, such as one whose backlog
+    /// overflowed. That is a departure too: the survivor's automatic report
+    /// must not take the size, even before the socket's own removal arrives.
+    #[tokio::test]
+    async fn a_dropped_size_owner_holds_the_size_like_one_that_left() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "phone");
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        session.remove_dead(vec![ClientId::new("phone")]);
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        // The socket's own removal arrives late and changes nothing.
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("phone"),
+            },
+        );
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
+
+        session.vt.shut_down();
+        let _ = thread.join();
+    }
+
+    /// A pending claim is the last keystroke's, never an older one's; it
+    /// survives a layout pass with no size; and a parked owner's keystroke is
+    /// remembered like anyone else's.
+    #[tokio::test]
+    async fn a_pending_size_claim_is_the_newest_and_waits_for_a_real_viewport() {
+        let Sidecar {
+            commands,
+            results: _results,
+            queue,
+            thread,
+        } = spawn_sidecar(24, 80).unwrap();
+        let (mut session, _events) = test_session(commands, queue);
+        session.pty = Arc::new(Pty::childless_pty_for_resize_test().unwrap());
+
+        let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
+        let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+
+        // Newer typing elsewhere cancels the claim.
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "the Mac typed after the phone, so the phone's claim is gone"
+        );
+
+        // Newer typing on another hidden screen cancels it too.
+        type_into(&mut session, "mac");
+        declare_viewport(&mut session, "mac", 50, 200, false);
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "mac");
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!((session.rows, session.cols), (42, 47));
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone typed last, so the Mac's older claim is gone"
+        );
+        type_into(&mut session, "mac");
+
+        // A 0×0 layout pass does not spend the claim.
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "phone", 0, 0, true);
+        assert_eq!((session.rows, session.cols), (50, 200));
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the claim waited for a viewport that can complete it"
+        );
+
+        // The parked owner's own keystroke is remembered too.
+        declare_viewport(&mut session, "phone", 42, 47, false);
+        type_into(&mut session, "phone");
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (50, 200),
+            "nobody was sizing, so the Mac's layout took the size"
+        );
+        declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the phone typed first and is now showing, so it takes the size back"
         );
 
         session.vt.shut_down();
@@ -4750,6 +5037,7 @@ mod tests {
 
         let _mac = attach_interactive_client_at(&mut session, "mac", 50, 200);
         let _phone = attach_interactive_client_at(&mut session, "phone", 42, 47);
+        type_into(&mut session, "phone");
         assert_eq!((session.rows, session.cols), (42, 47));
 
         handle_msg(
@@ -4762,6 +5050,29 @@ mod tests {
             (session.rows, session.cols),
             (42, 47),
             "the phone's socket died; the size it chose stays"
+        );
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the survivor re-declaring its viewport is not a person acting"
+        );
+        type_into(&mut session, "mac");
+        assert_eq!((session.rows, session.cols), (50, 200));
+
+        // A screen that arrives after the owner left is a person opening the
+        // session, such as a phone reconnecting under a new id.
+        handle_msg(
+            &mut session,
+            SessionMsg::RemoveClient {
+                id: ClientId::new("mac"),
+            },
+        );
+        let _returning = attach_interactive_client_at(&mut session, "phone-again", 42, 47);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "nobody saw the owner leave, so the new screen sizes the session"
         );
 
         session.vt.shut_down();
@@ -4810,6 +5121,8 @@ mod tests {
         assert_eq!(session.policy_size(), Some((50, 200)));
 
         declare_viewport(&mut session, "phone", 42, 47, true);
+        assert_eq!(session.policy_size(), Some((50, 200)));
+        type_into(&mut session, "phone");
         assert_eq!(session.policy_size(), Some((42, 47)));
 
         session.vt.shut_down();
@@ -4846,8 +5159,9 @@ mod tests {
             "a pane nobody is looking at must not resize the session"
         );
 
-        // And it is not muted for good: putting that pane on screen is using it.
         declare_viewport(&mut session, "offscreen", 50, 200, true);
+        assert_eq!(session.policy_size(), Some((42, 47)));
+        type_into(&mut session, "offscreen");
         assert_eq!(session.policy_size(), Some((50, 200)));
 
         session.vt.shut_down();
@@ -5931,7 +6245,7 @@ mod tests {
                     plane: ClientPlane::Raw,
                     viewport: Some((24, 80)),
                     rendering: true,
-                    used: 1,
+                    typed_unseen: None,
                     staged_history: VecDeque::new(),
                     backlog_strikes: 0,
                     focused: None,
@@ -5942,7 +6256,8 @@ mod tests {
             )]),
             writer: Some(ClientId::new("writer")),
             next_seq: 2,
-            use_clock: 0,
+            size_owner: None,
+            survivors: std::collections::HashSet::new(),
             next_snapshot_request: 1,
             ring: VecDeque::new(),
             ring_bytes: 0,

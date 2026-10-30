@@ -79,7 +79,7 @@ fn start_daemon(tag: &str) -> Daemon {
 /// One attached client, held open so later barriers can be observed on it.
 struct Client {
     bridge: Child,
-    _stdin: std::process::ChildStdin,
+    to_bridge: std::process::ChildStdin,
     frames: mpsc::Receiver<(u8, Vec<u8>)>,
 }
 
@@ -103,7 +103,7 @@ fn attach(socket: &str, session: &str, rows: u16, cols: u16) -> Client {
     let mut to_bridge = bridge.stdin.take().expect("bridge stdin");
     let mut from_bridge = bridge.stdout.take().expect("bridge stdout");
 
-    let hello = r#"{"op":"hello","proto":1,"min_proto":1,"role":"attach","caps":["snapshot","events"],"client":"attach-barrier"}"#;
+    let hello = r#"{"op":"hello","proto":1,"min_proto":1,"role":"attach","caps":["snapshot","events","viewport"],"client":"attach-barrier"}"#;
     write_frame(&mut to_bridge, b'C', hello.as_bytes());
     let (kind, payload) = read_frame(&mut from_bridge).expect("hello reply");
     assert_eq!(kind, b'C');
@@ -129,7 +129,7 @@ fn attach(socket: &str, session: &str, rows: u16, cols: u16) -> Client {
 
     Client {
         bridge,
-        _stdin: to_bridge,
+        to_bridge,
         frames: receiver,
     }
 }
@@ -189,4 +189,58 @@ fn attaching_at_the_session_size_repaints_nobody() {
         keyframe_grids(&watcher).is_empty(),
         "a no-op resize repainted an unrelated viewer"
     );
+}
+
+#[test]
+fn a_phone_records_its_size_without_resizing_the_macs_terminal() {
+    let daemon = start_daemon("ownership");
+    let created = Command::new(CLIENT)
+        .args(["server", "create", "--name", "shared", "--", "/bin/cat"])
+        .env("TERMIOD_SOCK", &daemon.socket)
+        .output()
+        .expect("create session");
+    assert!(created.status.success(), "create failed: {created:?}");
+
+    let mut mac = attach(&daemon.socket, "shared", 50, 200);
+    assert_eq!(keyframe_grids(&mac), vec![(50, 200)]);
+    let mut phone = attach(&daemon.socket, "shared", 42, 47);
+    assert_eq!(keyframe_grids(&phone), vec![(50, 200)]);
+    assert!(
+        keyframe_grids(&mac).is_empty(),
+        "opening the phone resized the Mac"
+    );
+
+    let viewport = [22_u16.to_be_bytes(), 90_u16.to_be_bytes()].concat();
+    write_frame(&mut phone.to_bridge, b'R', &viewport);
+    assert!(keyframe_grids(&phone).is_empty(), "rotation took the size");
+    assert!(
+        keyframe_grids(&mac).is_empty(),
+        "rotation repainted the Mac"
+    );
+
+    write_frame(&mut phone.to_bridge, b'C', br#"{"op":"claim_writer"}"#);
+    assert!(
+        keyframe_grids(&phone).is_empty(),
+        "a write token claimed the size"
+    );
+    write_frame(&mut phone.to_bridge, b'D', b"x");
+    assert_eq!(keyframe_grids(&phone), vec![(22, 90)]);
+    assert_eq!(keyframe_grids(&mac), vec![(22, 90)]);
+
+    // The observer's new size must be saved for when the user types there.
+    let viewport = [45_u16.to_be_bytes(), 180_u16.to_be_bytes()].concat();
+    write_frame(&mut mac.to_bridge, b'R', &viewport);
+    assert!(keyframe_grids(&mac).is_empty());
+    assert!(keyframe_grids(&phone).is_empty());
+    write_frame(&mut mac.to_bridge, b'C', br#"{"op":"claim_writer"}"#);
+    write_frame(&mut mac.to_bridge, b'D', b"y");
+    assert_eq!(keyframe_grids(&mac), vec![(45, 180)]);
+    assert_eq!(keyframe_grids(&phone), vec![(45, 180)]);
+
+    let killed = Command::new(CLIENT)
+        .args(["server", "kill", "shared"])
+        .env("TERMIOD_SOCK", &daemon.socket)
+        .output()
+        .expect("kill test session");
+    assert!(killed.status.success(), "cleanup failed: {killed:?}");
 }
