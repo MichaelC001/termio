@@ -17,6 +17,25 @@ export type ChangelogEntry = {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.68.0",
+    date: "2026-10-30",
+    title: "The size stays with the screen you type on",
+    changes: {
+      new: [
+        "termio whoami shows the session, project and pane a shell runs in.",
+        "termio skill prints, installs or removes the skill that teaches your agents termio, without touching their hooks.",
+        "Cmd-clicking a file path in a terminal also shows the file in the Files tree.",
+      ],
+      improved: [
+        "A terminal is sized for the screen you last typed on. Opening the session on your phone or in another window no longer resizes it for the screen you are using.",
+        "A mistyped termio command suggests the closest command instead of reporting a missing folder.",
+      ],
+      fixed: [
+        "The pane header no longer changes color when a colored line scrolls past the top.",
+      ],
+    },
+  },
+  {
     version: "0.67.0",
     date: "2026-10-27",
     title: "Termio's own terminal renderer",
