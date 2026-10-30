@@ -477,16 +477,16 @@ def main():
     check("fan-out: client 2 sees injected output", b"PINGPONG" in read_until(a2, "PINGPONG"))
 
     # Single writer is about input; it says nothing about size. What sizes a
-    # session is *use*, and opening one on a screen is somebody using that
-    # screen — so a2 arriving takes the size to 34x110 without taking the token,
-    # and the answer is one screen's grid rather than a blend of the two.
+    # session is the screen a person last typed on. Opening the session on a
+    # second screen is not typing there, so a2 arriving leaves a1's 26x90.
+    time.sleep(0.5)
     check(
-        "attaching sizes the session to the screen it was opened on",
-        wait_for_size("fan", (34, 110)),
+        "attaching a second screen leaves the size with the screen in use",
+        session_size("fan") == (26, 90),
     )
     os.write(a1, b"FROM_A1\r")
     check("single-writer: writer input applied", b"FROM_A1" in read_until(a2, "FROM_A1"))
-    check("typing brings the session back to that screen", wait_for_size("fan", (26, 90)))
+    check("typing on the screen in use keeps the size there", wait_for_size("fan", (26, 90)))
 
     # Typing moves the size, and deliberately not by moving the token: a claim
     # on its own is not a use. Binding the size to the token is what let two

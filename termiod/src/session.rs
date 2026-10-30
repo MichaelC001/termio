@@ -1435,8 +1435,16 @@ impl Session {
     /// A viewport report records a preference, not an interaction. In
     /// particular, rotation and reconnecting a phone must not take the size
     /// from a Mac somebody is using.
+    ///
+    /// A departed owner still holds the size against requests (§12: leaving is
+    /// not using). The survivor's report on being handed the token is
+    /// automatic, not a person; it takes the size only by typing.
     fn request_size(&mut self, id: &ClientId) {
-        if self.policy_size().is_none() {
+        let owner_departed = self
+            .size_owner
+            .as_ref()
+            .is_some_and(|owner| !self.clients.contains_key(owner));
+        if self.policy_size().is_none() && !owner_departed {
             self.take_size(id);
         }
         if self.size_owner.as_ref() == Some(id) {
@@ -4969,6 +4977,14 @@ mod tests {
             (42, 47),
             "the phone's socket died; the size it chose stays"
         );
+        declare_viewport(&mut session, "mac", 50, 200, true);
+        assert_eq!(
+            (session.rows, session.cols),
+            (42, 47),
+            "the survivor re-declaring its viewport is not a person acting"
+        );
+        type_into(&mut session, "mac");
+        assert_eq!((session.rows, session.cols), (50, 200));
 
         session.vt.shut_down();
         let _ = thread.join();
